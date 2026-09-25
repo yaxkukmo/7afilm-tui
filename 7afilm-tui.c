@@ -139,12 +139,11 @@ static chtype g_lt, g_rt, g_tt;       /* T-junctions                 */
 static void
 init_box_chars(void)
 {
-    /* Use ASCII on OpenBSD wscons console (/dev/ttyC*) or when
-     * NO_ACS env var is set; otherwise use ncurses ACS.             */
-    char *tty  = ttyname(STDIN_FILENO);
-    int   ascii = (getenv("NO_ACS") != NULL) ||
-                  (tty && strncmp(tty, "/dev/ttyC", 9) == 0);
-    if (ascii) {
+    /* The OpenBSD wscons console (TERM=vt220 / wsvt25) supports DEC
+     * Special Graphics, so ACS works there too.  ncurses falls back to
+     * ASCII by itself when the terminal has no acsc capability.  The
+     * NO_ACS env var still forces plain ASCII.                        */
+    if (getenv("NO_ACS") != NULL) {
         g_ul = g_ur = g_ll = g_lr = g_lt = g_rt = g_tt = '+';
         g_hl = '-';
         g_vl = '|';
@@ -776,11 +775,9 @@ field_reg(int type, char *buf, size_t bufsz, int maxval,
 static void
 draw_box_bottom(int row, int col, int width)
 {
-    int i;
     attron(COLOR_PAIR(CP_BOX_LINE));
     mvaddch(row, col, g_ll);
-    for (i = 1; i < width - 1; i++)
-        mvaddch(row, col + i, g_hl);
+    mvhline(row, col + 1, g_hl, width - 2);
     mvaddch(row, col + width - 1, g_lr);
     attroff(COLOR_PAIR(CP_BOX_LINE));
 }
@@ -788,11 +785,9 @@ draw_box_bottom(int row, int col, int width)
 static void
 draw_box_top_plain(int row, int col, int width)
 {
-    int i;
     attron(COLOR_PAIR(CP_BOX_LINE));
     mvaddch(row, col, g_ul);
-    for (i = 1; i < width - 1; i++)
-        mvaddch(row, col + i, g_hl);
+    mvhline(row, col + 1, g_hl, width - 2);
     mvaddch(row, col + width - 1, g_ur);
     attroff(COLOR_PAIR(CP_BOX_LINE));
 }
@@ -800,11 +795,9 @@ draw_box_top_plain(int row, int col, int width)
 static void
 draw_h_separator(int row, int col, int width)
 {
-    int i;
     attron(COLOR_PAIR(CP_BOX_LINE));
     mvaddch(row, col, g_lt);
-    for (i = 1; i < width - 1; i++)
-        mvaddch(row, col + i, g_hl);
+    mvhline(row, col + 1, g_hl, width - 2);
     mvaddch(row, col + width - 1, g_rt);
     attroff(COLOR_PAIR(CP_BOX_LINE));
 }
@@ -812,17 +805,43 @@ draw_h_separator(int row, int col, int width)
 static void
 draw_box_sides(int row, int col, int width)
 {
-    int i;
     attron(COLOR_PAIR(CP_BOX_LINE));
     mvaddch(row, col, g_vl);
     attroff(COLOR_PAIR(CP_BOX_LINE));
     attron(COLOR_PAIR(CP_BOX));
-    for (i = 1; i < width - 1; i++)
-        addch(' ');
+    hline(' ', width - 2);
     attroff(COLOR_PAIR(CP_BOX));
     attron(COLOR_PAIR(CP_BOX_LINE));
     mvaddch(row, col + width - 1, g_vl);
     attroff(COLOR_PAIR(CP_BOX_LINE));
+}
+
+/* Popup frame: border drawn with the current attributes, plus a drop
+ * shadow (one column right, one row below) recolored in place.       */
+static void
+draw_popup_frame(int top, int left, int height, int width)
+{
+    int rows = getmaxy(stdscr);
+    int cols = getmaxx(stdscr);
+    int r;
+
+    mvaddch(top, left, g_ul);
+    mvhline(top, left + 1, g_hl, width - 2);
+    mvaddch(top, left + width - 1, g_ur);
+    mvvline(top + 1, left, g_vl, height - 2);
+    mvvline(top + 1, left + width - 1, g_vl, height - 2);
+    mvaddch(top + height - 1, left, g_ll);
+    mvhline(top + height - 1, left + 1, g_hl, width - 2);
+    mvaddch(top + height - 1, left + width - 1, g_lr);
+
+    if (!has_colors()) return;
+    if (left + width < cols)
+        for (r = top + 1; r <= top + height && r < rows; r++)
+            mvchgat(r, left + width, 1, A_NORMAL, CP_BUTTON, NULL);
+    if (top + height < rows && left + 1 < cols)
+        mvchgat(top + height, left + 1,
+                (left + width < cols ? width : cols - left - 1),
+                A_NORMAL, CP_BUTTON, NULL);
 }
 
 /* Section title row inside the flat main box */
@@ -1174,14 +1193,14 @@ static const char *tab_names[TAB_COUNT] = { "F1:Timer", "F2:Db", "F3:Calc", "F4:
 static void
 draw_tab_chrome(int row, int cols)
 {
-    int t, col = INDENT, i;
+    int t, col = INDENT;
 
     /* Left border + interior fill */
     attron(COLOR_PAIR(CP_BOX_LINE));
     mvaddch(row, 0, g_vl);
     attroff(COLOR_PAIR(CP_BOX_LINE));
     attron(COLOR_PAIR(CP_BOX));
-    for (i = 1; i < cols - 1; i++) mvaddch(row, i, ' ');
+    mvhline(row, 1, ' ', cols - 2);
     attroff(COLOR_PAIR(CP_BOX));
 
     /* Tab buttons */
@@ -1495,7 +1514,7 @@ draw_timer_tab(int row)
                 attroff(COLOR_PAIR(CP_PROGRESS));
             } else {
                 attron(A_DIM | COLOR_PAIR(CP_BOX));
-                mvaddch(row, INDENT + 2 + i, '-');
+                mvaddch(row, INDENT + 2 + i, ACS_CKBOARD);
                 attroff(A_DIM | COLOR_PAIR(CP_BOX));
             }
         }
@@ -1887,9 +1906,7 @@ draw_dropdown_popup(void)
     if (g_popup_sel >= g_popup_scroll + max_vis)
         g_popup_scroll = g_popup_sel - max_vis + 1;
 
-    mvaddch(pr, pc, g_ul);
-    for (i = 1; i < pw - 1; i++) addch(g_hl);
-    mvaddch(pr, pc + pw - 1, g_ur);
+    draw_popup_frame(pr, pc, ph, pw);
 
     for (i = 0; i < max_vis; i++) {
         int idx    = g_popup_scroll + i;
@@ -1899,7 +1916,6 @@ draw_dropdown_popup(void)
         val  = g_popup_dm->options[idx];
         vlen = (int)strlen(val);
 
-        mvaddch(pr + 1 + i, pc, g_vl);
         if (is_sel) attron(A_REVERSE | A_BOLD);
         move(pr + 1 + i, pc + 1);
         if (i == 0 && g_popup_scroll > 0)
@@ -1911,12 +1927,7 @@ draw_dropdown_popup(void)
         for (j = 0; j < pw - 3; j++)
             addch(j < vlen ? (unsigned char)val[j] : ' ');
         if (is_sel) attroff(A_REVERSE | A_BOLD);
-        mvaddch(pr + 1 + i, pc + pw - 1, g_vl);
     }
-
-    mvaddch(pr + 1 + max_vis, pc, g_ll);
-    for (i = 1; i < pw - 1; i++) addch(g_hl);
-    mvaddch(pr + 1 + max_vis, pc + pw - 1, g_lr);
 }
 
 static void
@@ -1937,13 +1948,9 @@ draw_edit_popup(void)
     pc = (cols - pw) / 2;
     if (pc < 0) pc = 0;
 
-    /* Top border */
-    mvaddch(pr, pc, g_ul);
-    for (i = 1; i < pw - 1; i++) addch(g_hl);
-    mvaddch(pr, pc + pw - 1, g_ur);
+    draw_popup_frame(pr, pc, 4, pw);
 
     /* Edit row */
-    mvaddch(pr + 1, pc, g_vl);
     mvprintw(pr + 1, pc + 1, " Edit: ");
     len = (int)strlen(g_editpopup_buf);
     attron(A_REVERSE | A_BOLD);
@@ -1951,25 +1958,11 @@ draw_edit_popup(void)
     for (i = 0; i < fw; i++)
         addch(i < len ? (unsigned char)g_editpopup_buf[i] : ' ');
     attroff(A_REVERSE | A_BOLD);
-    mvaddch(pr + 1, pc + pw - 1, g_vl);
 
     /* Hint row */
-    mvaddch(pr + 2, pc, g_vl);
     attron(A_DIM);
-    mvprintw(pr + 2, pc + 1, " Enter=save  Esc=cancel");
-    move(pr + 2, pc + pw - 1);
-    /* pad remaining space */
-    {
-        int cur = 24;
-        while (cur < pw - 1) { addch(' '); cur++; }
-    }
+    mvprintw(pr + 2, pc + 1, "%-*.*s", pw - 2, pw - 2, " Enter=save  Esc=cancel");
     attroff(A_DIM);
-    mvaddch(pr + 2, pc + pw - 1, g_vl);
-
-    /* Bottom border */
-    mvaddch(pr + 3, pc, g_ll);
-    for (i = 1; i < pw - 1; i++) addch(g_hl);
-    mvaddch(pr + 3, pc + pw - 1, g_lr);
 
     /* Place cursor at end of text */
     {
@@ -2007,29 +2000,22 @@ draw_search_popup(void)
     if (g_searchpopup_sel >= g_searchpopup_scroll + SEARCH_VIS)
         g_searchpopup_scroll = g_searchpopup_sel - SEARCH_VIS + 1;
 
-    r = pr;
-
-    /* Top border */
-    mvaddch(r, pc, g_ul);
-    for (i = 1; i < pw - 1; i++) addch(g_hl);
-    mvaddch(r, pc + pw - 1, g_ur);
-    r++;
+    draw_popup_frame(pr, pc, SEARCH_VIS + 5, pw);
+    r = pr + 1;
 
     /* Search input row */
     len = (int)strlen(g_searchpopup_buf);
-    mvaddch(r, pc, g_vl);
     mvprintw(r, pc + 1, " Search: ");
     attron(A_REVERSE | A_BOLD);
     move(r, pc + 10);
     for (i = 0; i < fw; i++)
         addch(i < len ? (unsigned char)g_searchpopup_buf[i] : ' ');
     attroff(A_REVERSE | A_BOLD);
-    mvaddch(r, pc + pw - 1, g_vl);
     r++;
 
     /* Separator */
     mvaddch(r, pc, g_lt);
-    for (i = 1; i < pw - 1; i++) addch(g_hl);
+    mvhline(r, pc + 1, g_hl, pw - 2);
     mvaddch(r, pc + pw - 1, g_rt);
     r++;
 
@@ -2038,7 +2024,6 @@ draw_search_popup(void)
         int total = g_searchpopup_nmatches + (g_searchpopup_show_new ? 1 : 0);
         for (i = 0; i < SEARCH_VIS; i++) {
             int list_idx = g_searchpopup_scroll + i;
-            mvaddch(r, pc, g_vl);
             if (list_idx < total) {
                 int is_sel = (list_idx == g_searchpopup_sel);
                 int j;
@@ -2071,13 +2056,11 @@ draw_search_popup(void)
             } else {
                 mvprintw(r, pc + 1, "%-*s", pw - 2, "");
             }
-            mvaddch(r, pc + pw - 1, g_vl);
             r++;
         }
     }
 
     /* Hint row */
-    mvaddch(r, pc, g_vl);
     attron(A_DIM);
     {
         const char *hint = " Enter=load  Esc=cancel  Up/Down=select";
@@ -2087,13 +2070,6 @@ draw_search_popup(void)
         for (j = hlen + 1; j < pw - 1; j++) mvaddch(r, pc + j, ' ');
     }
     attroff(A_DIM);
-    mvaddch(r, pc + pw - 1, g_vl);
-    r++;
-
-    /* Bottom border */
-    mvaddch(r, pc, g_ll);
-    for (i = 1; i < pw - 1; i++) addch(g_hl);
-    mvaddch(r, pc + pw - 1, g_lr);
 
     /* Cursor in search field */
     {
@@ -2244,10 +2220,8 @@ draw_all(void)
 
     /* ---- Main content area: borders + fill ---- */
     attron(COLOR_PAIR(CP_BOX_LINE));
-    for (r = row; r <= rows - 4; r++) {
-        mvaddch(r, 0,        g_vl);
-        mvaddch(r, cols - 1, g_vl);
-    }
+    mvvline(row, 0,        g_vl, rows - 3 - row);
+    mvvline(row, cols - 1, g_vl, rows - 3 - row);
     attroff(COLOR_PAIR(CP_BOX_LINE));
     attron(COLOR_PAIR(CP_BOX));
     for (r = row; r <= rows - 4; r++)
