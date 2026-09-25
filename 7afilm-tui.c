@@ -2690,6 +2690,15 @@ main(void)
 
     setenv("NCURSES_NO_UTF8_ACS", "1", 0);
     setlocale(LC_ALL, "");
+    {
+        /* The wscons console (/dev/ttyC*) does not decode UTF-8: in a
+         * UTF-8 locale ncurses would send Unicode box characters that
+         * show up as garbage.  Use the C ctype there so ncurses emits
+         * DEC Special Graphics, which wscons does support.            */
+        char *tty = ttyname(STDIN_FILENO);
+        if (tty && strncmp(tty, "/dev/ttyC", 9) == 0)
+            setlocale(LC_CTYPE, "C");
+    }
     initscr();
     init_box_chars();
     if (has_colors()) {
