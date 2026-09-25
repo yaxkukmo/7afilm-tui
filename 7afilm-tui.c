@@ -139,11 +139,17 @@ static chtype g_lt, g_rt, g_tt;       /* T-junctions                 */
 static void
 init_box_chars(void)
 {
-    /* The OpenBSD wscons console (TERM=vt220 / wsvt25) supports DEC
-     * Special Graphics, so ACS works there too.  ncurses falls back to
-     * ASCII by itself when the terminal has no acsc capability.  The
-     * NO_ACS env var still forces plain ASCII.                        */
-    if (getenv("NO_ACS") != NULL) {
+    /* The OpenBSD wscons console (/dev/ttyC*) understands DEC Special
+     * Graphics, but the built-in framebuffer fonts have no box-drawing
+     * glyphs and show '?' instead, so default to ASCII there.
+     * FORCE_ACS enables ACS on the console (e.g. with a loaded font);
+     * NO_ACS forces ASCII everywhere.  Elsewhere ncurses falls back to
+     * ASCII by itself when the terminal has no acsc capability.       */
+    char *tty   = ttyname(STDIN_FILENO);
+    int   ascii = (getenv("NO_ACS") != NULL) ||
+                  (tty && strncmp(tty, "/dev/ttyC", 9) == 0 &&
+                   getenv("FORCE_ACS") == NULL);
+    if (ascii) {
         g_ul = g_ur = g_ll = g_lr = g_lt = g_rt = g_tt = '+';
         g_hl = '-';
         g_vl = '|';
