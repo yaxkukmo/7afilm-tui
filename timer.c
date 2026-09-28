@@ -1,10 +1,10 @@
 #include "timer.h"
+#include "tui.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
-#include <curses.h>
 
 CountdownTimer g_timers[TIMER_COUNT];
 
@@ -42,15 +42,6 @@ now_ms(void)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
-}
-
-void
-AdjustBuf(char *buf, size_t bufsz, int delta, int maxval)
-{
-    long val = strtol(buf, NULL, 10) + delta;
-    if (val < 0)      val = maxval;
-    if (val > maxval) val = 0;
-    snprintf(buf, bufsz, "%02ld", val);
 }
 
 void

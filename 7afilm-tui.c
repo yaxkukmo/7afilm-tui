@@ -12,65 +12,36 @@
  *   Left / Right     - previous / next field
  *   Up / Down        - field above / below; spinner +/-1 (HH:MM:SS),
  *                      list navigation or dropdown on those fields
- *   Enter / Space    - activate button or load selected preset
- *   d                - delete selected item (list focused)
+ *   Enter / Space    - activate button or open dropdown
  *   Esc              - close popup / dropdown; otherwise focus the tab bar
- *   q / Q            - quit
+ *   Ctrl+Q           - quit
  */
 
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 
-#include <curses.h>
-#include <locale.h>
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
-#include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
-#include <sqlite3.h>
 
+#include "db.h"
 #include "dynlist.h"
+#include "form.h"
+#include "listpopup.h"
 #include "timer.h"
+#include "tui.h"
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
 /* ------------------------------------------------------------------ */
 
 #define PRESET_NAME_LEN    64
-#define VISIBLE_PRESETS     4
-#define VISIBLE_CFG_LIST    6
-#define MAX_FIELDS        160
-
-#define FT_TEXT    0   /* free text                                    */
-#define FT_DIGITS  1   /* digits only                                  */
-#define FT_SPINNER 2   /* digits + up/down arrows (HH/MM/SS)          */
-#define FT_BUTTON  3   /* Enter/Space = activate                       */
-#define FT_LIST    4   /* list (presets or config)                     */
-#define FT_TABS    5   /* tab bar - Left/Right switches tab            */
-#define FT_DROPDOWN 6  /* dropdown - opens popup                       */
-#define MAX_DROPDOWNS 8
-#define MAX_SEARCH_MATCHES 512
-
-#define CP_BUTTON   1  /* white on black - button background          */
-#define CP_BOX      2  /* box interior fill: fg=default, bg=#033535   */
-#define CP_BG       3  /* app background: fg=default, bg=#404040      */
-#define CP_BOX_LINE   4  /* box border chars: fg=amber, bg=transparent   */
-#define CP_BOX_BORDER 5  /* block border: fg=#033535, bg=#404040         */
-#define CP_INPUT      6  /* input field: fg=amber, bg=#0d4848          */
-#define CP_PROGRESS   7  /* progress bar: fg=black, bg=green           */
-#define CP_ALARM       8  /* alarm tick: fg=black, bg=red               */
-#define COLOR_BOX_BG   8  /* custom color #033535                      */
-#define COLOR_APP_BG   9  /* custom color #404040                      */
-#define COLOR_BORDER  10  /* custom color amber safelight ~#E68000     */
-#define COLOR_INPUT_BG 11 /* custom color #0d4848 - lighter teal       */
-#define COLOR_PROG_GREEN 12 /* custom green for progress bar           */
-
-#define LABEL_W    14  /* label column width ("Temperature:" is widest) */
-#define INDENT      2  /* section indent                               */
 
 #define TAB_TIMER     0
 #define TAB_DATABASE  1
@@ -114,58 +85,6 @@ typedef struct {
     char name[PRESET_NAME_LEN];
 } PresetRow;
 
-typedef struct {
-    int    type;
-    char  *buf;
-    size_t bufsz;
-    int    maxval;
-    void (*action)(void *);
-    void  *arg;
-    int    row, col, width;
-} Field;
-
-typedef struct {
-    const char **options;
-    int         *index;
-    char        *buf;
-    size_t       bufsz;
-    void       (*on_confirm)(int); /* called with new index on confirm; may be NULL */
-} DropdownMeta;
-
-/* ------------------------------------------------------------------ */
-/* Box-drawing characters (ACS or ASCII fallback)                     */
-/* ------------------------------------------------------------------ */
-
-static chtype g_ul, g_ur, g_ll, g_lr; /* corners                     */
-static chtype g_hl, g_vl;             /* horizontal / vertical line  */
-static chtype g_lt, g_rt, g_tt;       /* T-junctions                 */
-
-static void
-init_box_chars(void)
-{
-    /* The OpenBSD wscons console (/dev/ttyC*) understands DEC Special
-     * Graphics, but the built-in framebuffer fonts have no box-drawing
-     * glyphs and show '?' instead, so default to ASCII there.
-     * FORCE_ACS enables ACS on the console (e.g. with a loaded font);
-     * NO_ACS forces ASCII everywhere.  Elsewhere ncurses falls back to
-     * ASCII by itself when the terminal has no acsc capability.       */
-    char *tty   = ttyname(STDIN_FILENO);
-    int   ascii = (getenv("NO_ACS") != NULL) ||
-                  (tty && strncmp(tty, "/dev/ttyC", 9) == 0 &&
-                   getenv("FORCE_ACS") == NULL);
-    if (ascii) {
-        g_ul = g_ur = g_ll = g_lr = g_lt = g_rt = g_tt = '+';
-        g_hl = '-';
-        g_vl = '|';
-    } else {
-        g_ul = ACS_ULCORNER; g_ur = ACS_URCORNER;
-        g_ll = ACS_LLCORNER; g_lr = ACS_LRCORNER;
-        g_hl = ACS_HLINE;    g_vl = ACS_VLINE;
-        g_lt = ACS_LTEE;     g_rt = ACS_RTEE;
-        g_tt = ACS_TTEE;
-    }
-}
-
 /* ------------------------------------------------------------------ */
 /* Global state                                                        */
 /* ------------------------------------------------------------------ */
@@ -174,20 +93,9 @@ static sqlite3   *g_db;
 static PresetRow *g_presets      = NULL;
 static int        g_preset_count  = 0;
 static int        g_preset_cap    = 0;
-static int        g_preset_scroll = 0;
-static int        g_preset_sel    = 0;
 static char       g_preset_name[PRESET_NAME_LEN] = "";
 static sqlite3_int64 g_preset_loaded_id = -1;
-char              g_status[128]    = "";
 static char       g_temp_buf[8]   = "20";  /* runtime temperature — not stored in DB */
-
-static Field      g_fields[MAX_FIELDS];
-static int        g_nfields = 0;
-static int        g_focus   = 0;
-static int        g_focus_stale = 0; /* g_fields still holds the previous tab */
-/* 8-color terminal (e.g. the wscons console): light text on black and
- * focused / selected elements shown in reverse video.                  */
-static int        g_basic_colors = 0;
 
 static int        g_tab     = TAB_TIMER;
 static int        g_want_quit = 0;
@@ -200,33 +108,16 @@ static int g_film_idx     = 0;
 static int g_iso_nom_idx  = 8;   /* 400 */
 static int g_iso_used_idx = 8;   /* 400 */
 static int g_dev_idx      = 0;
-static DropdownMeta g_dd_store[MAX_DROPDOWNS];
-static int          g_dd_count = 0;
 
-/* Edit popup (config list item rename) state */
-static int      g_editpopup_open = 0;
-static DynList *g_editpopup_dl   = NULL;
-static int      g_editpopup_idx  = 0;
-static char     g_editpopup_buf[MAX_OPTION_LEN]  = "";
-static char     g_editpopup_orig[MAX_OPTION_LEN] = "";
+/* Search preset popup */
+static int preset_count(void *ctx) { (void)ctx; return g_preset_count; }
+static const char *preset_name(void *ctx, int i) { (void)ctx; return g_presets[i].name; }
 
-/* Popup (open dropdown) state */
-static int           g_popup_open   = 0;
-static DropdownMeta *g_popup_dm     = NULL;
-static int           g_popup_frow   = 0;
-static int           g_popup_fcol   = 0;
-static int           g_popup_fwidth = 0;
-static int           g_popup_sel    = 0;
-static int           g_popup_scroll = 0;
-
-/* Search preset popup state */
-static int  g_searchpopup_open              = 0;
-static char g_searchpopup_buf[PRESET_NAME_LEN] = "";
-static int  g_searchpopup_sel               = 0;
-static int  g_searchpopup_scroll            = 0;
-static int  g_searchpopup_matches[MAX_SEARCH_MATCHES];
-static int  g_searchpopup_nmatches          = 0;
-static int  g_searchpopup_show_new          = 0;
+static ListPopup g_search_popup = {
+    " Search: ", " Enter=load  Esc=cancel  Up/Down=select", NULL,
+    preset_count, preset_name, NULL,
+    0, "", 0, 0, {0}, 0
+};
 
 /* Dynamic lists */
 static DynList g_films;
@@ -255,7 +146,6 @@ static char calc_actual_temp[8]   = "20";
 static char calc_dilution[24]     = "1:100";
 static char calc_volume[8]        = "500";
 
-static volatile sig_atomic_t g_resize = 0;
 static int        g_content_scroll[TAB_COUNT]; /* per-tab scroll offset (zero-init) */
 
 /* Workflow phase for timer tab:
@@ -266,7 +156,6 @@ int g_workflow_phase = 0;
 
 /* Forward declarations */
 static void sync_dropdown_indices(void);
-static const char *ColStr(sqlite3_stmt *s, int c);
 static void BuildPresetName(char *out, size_t outsz, const char *film,
                             const char *iso_nom, const char *iso_used,
                             const char *developer, const char *dilution);
@@ -274,38 +163,6 @@ static void BuildPresetName(char *out, size_t outsz, const char *film,
 /* ------------------------------------------------------------------ */
 /* Database                                                            */
 /* ------------------------------------------------------------------ */
-
-static int
-TableExists(const char *name)
-{
-    sqlite3_stmt *stmt;
-    int exists = 0;
-    if (sqlite3_prepare_v2(g_db,
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1;",
-            -1, &stmt, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
-        exists = (sqlite3_step(stmt) == SQLITE_ROW);
-        sqlite3_finalize(stmt);
-    }
-    return exists;
-}
-
-static int
-ColumnExists(const char *table, const char *col)
-{
-    sqlite3_stmt *stmt;
-    char sql[256];
-    int exists = 0;
-    snprintf(sql, sizeof(sql), "PRAGMA table_info(%s);", table);
-    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            const char *cn = (const char *)sqlite3_column_text(stmt, 1);
-            if (cn && strcmp(cn, col) == 0) { exists = 1; break; }
-        }
-        sqlite3_finalize(stmt);
-    }
-    return exists;
-}
 
 static void
 MigrateFromOldSchema(void)
@@ -392,30 +249,9 @@ UpsertOption(const char *category, const char *value)
 }
 
 static void
-BindOptId(sqlite3_stmt *stmt, int param, sqlite3_int64 id)
-{
-    if (id < 0) sqlite3_bind_null(stmt, param);
-    else        sqlite3_bind_int64(stmt, param, id);
-}
-
-static void
 OpenDatabase(void)
 {
-    const char *home = getenv("HOME");
-    char app_dir[1024], db_path[1040];
-
-    snprintf(app_dir, sizeof(app_dir), "%s/.7a", home ? home : ".");
-    mkdir(app_dir, 0700);
-    snprintf(db_path, sizeof(db_path), "%s/film.db", app_dir);
-
-    if (sqlite3_open(db_path, &g_db) != SQLITE_OK) {
-        endwin();
-        fprintf(stderr, "7afilm-tui: cannot open %s\n", db_path);
-        exit(1);
-    }
-    sqlite3_exec(g_db, "PRAGMA journal_mode=WAL;",  NULL, NULL, NULL);
-    sqlite3_exec(g_db, "PRAGMA busy_timeout=5000;", NULL, NULL, NULL);
-    sqlite3_exec(g_db, "PRAGMA foreign_keys=ON;",   NULL, NULL, NULL);
+    g_db = db_open("7afilm-tui", "film.db");
 
     sqlite3_exec(g_db,
         "CREATE TABLE IF NOT EXISTS options ("
@@ -425,7 +261,7 @@ OpenDatabase(void)
         " UNIQUE(category, value)"
         ");", NULL, NULL, NULL);
 
-    if (TableExists("user_lists")) {
+    if (db_table_exists(g_db, "user_lists")) {
         sqlite3_exec(g_db,
             "INSERT OR IGNORE INTO options(category, value)"
             " SELECT category, item FROM user_lists;",
@@ -433,7 +269,7 @@ OpenDatabase(void)
         sqlite3_exec(g_db, "DROP TABLE user_lists;", NULL, NULL, NULL);
     }
 
-    if (ColumnExists("presets", "dev_hh"))
+    if (db_column_exists(g_db, "presets", "dev_hh"))
         MigrateFromOldSchema();
 
     sqlite3_exec(g_db,
@@ -571,15 +407,6 @@ LoadPresetList(void)
         g_preset_count++;
     }
     sqlite3_finalize(stmt);
-    if (g_preset_sel >= g_preset_count) g_preset_sel = g_preset_count - 1;
-    if (g_preset_sel < 0) g_preset_sel = 0;
-}
-
-static const char *
-ColStr(sqlite3_stmt *s, int c)
-{
-    const unsigned char *v = sqlite3_column_text(s, c);
-    return v ? (const char *)v : "";
 }
 
 static void
@@ -605,11 +432,11 @@ LoadPresetIntoTimers(sqlite3_int64 id)
             " WHERE p.id=?1;", -1, &stmt, NULL) != SQLITE_OK) return;
     sqlite3_bind_int64(stmt, 1, id);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-        snprintf(dev->film_buf,      sizeof(dev->film_buf),      "%s", ColStr(stmt, 0));
-        snprintf(dev->iso_buf,       sizeof(dev->iso_buf),       "%s", ColStr(stmt, 1));
-        snprintf(dev->iso_used_buf,  sizeof(dev->iso_used_buf),  "%s", ColStr(stmt, 2));
-        snprintf(dev->dev_name_buf,  sizeof(dev->dev_name_buf),  "%s", ColStr(stmt, 3));
-        snprintf(dev->dilution_buf,  sizeof(dev->dilution_buf),  "%s", ColStr(stmt, 4));
+        snprintf(dev->film_buf,      sizeof(dev->film_buf),      "%s", db_col_str(stmt,0));
+        snprintf(dev->iso_buf,       sizeof(dev->iso_buf),       "%s", db_col_str(stmt,1));
+        snprintf(dev->iso_used_buf,  sizeof(dev->iso_used_buf),  "%s", db_col_str(stmt,2));
+        snprintf(dev->dev_name_buf,  sizeof(dev->dev_name_buf),  "%s", db_col_str(stmt,3));
+        snprintf(dev->dilution_buf,  sizeof(dev->dilution_buf),  "%s", db_col_str(stmt,4));
 
         dev_time  = sqlite3_column_int(stmt, 5);
         snprintf(dev->alarm_buf,     sizeof(dev->alarm_buf),     "%d", sqlite3_column_int(stmt, 6));
@@ -682,11 +509,11 @@ SavePreset(void)
             "   AND fix_time=?11 AND fix_every=?12 AND fix_for=?13",
             -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(stmt,  1, name, -1, SQLITE_TRANSIENT);
-        BindOptId(stmt,  2, film_id);
-        BindOptId(stmt,  3, iso_id);
-        BindOptId(stmt,  4, iso_used_id);
-        BindOptId(stmt,  5, dev_id);
-        BindOptId(stmt,  6, dil_id);
+        db_bind_id(stmt, 2, film_id);
+        db_bind_id(stmt, 3, iso_id);
+        db_bind_id(stmt, 4, iso_used_id);
+        db_bind_id(stmt, 5, dev_id);
+        db_bind_id(stmt, 6, dil_id);
         sqlite3_bind_int(stmt,  7, dev_time);
         sqlite3_bind_int(stmt,  8, (int)strtol(dev->alarm_buf,     NULL, 10));
         sqlite3_bind_int(stmt,  9, (int)strtol(dev->alarm_dur_buf, NULL, 10));
@@ -717,11 +544,11 @@ SavePreset(void)
             -1, &stmt, NULL) != SQLITE_OK) return;
 
     sqlite3_bind_text(stmt,  1, name, -1, SQLITE_TRANSIENT);
-    BindOptId(stmt,  2, film_id);
-    BindOptId(stmt,  3, iso_id);
-    BindOptId(stmt,  4, iso_used_id);
-    BindOptId(stmt,  5, dev_id);
-    BindOptId(stmt,  6, dil_id);
+    db_bind_id(stmt, 2, film_id);
+    db_bind_id(stmt, 3, iso_id);
+    db_bind_id(stmt, 4, iso_used_id);
+    db_bind_id(stmt, 5, dev_id);
+    db_bind_id(stmt, 6, dil_id);
     sqlite3_bind_int(stmt,  7, dev_time);
     sqlite3_bind_int(stmt,  8, (int)strtol(dev->alarm_buf,     NULL, 10));
     sqlite3_bind_int(stmt,  9, (int)strtol(dev->alarm_dur_buf, NULL, 10));
@@ -735,275 +562,11 @@ SavePreset(void)
     /* Keep g_preset_name in sync for display */
     snprintf(g_preset_name, sizeof(g_preset_name), "%s", name);
     LoadPresetList();
-    g_preset_scroll = 0;
     snprintf(g_status, sizeof(g_status), "Saved: %s", name);
 }
 
-static void
-DeleteSelectedPreset(void)
-{
-    sqlite3_stmt *stmt;
-    if (g_preset_sel < 0 || g_preset_sel >= g_preset_count) return;
-    if (sqlite3_prepare_v2(g_db,
-            "DELETE FROM presets WHERE id=?1;", -1, &stmt, NULL) != SQLITE_OK) return;
-    sqlite3_bind_int64(stmt, 1, g_presets[g_preset_sel].id);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-    if (g_preset_loaded_id == g_presets[g_preset_sel].id)
-        g_preset_loaded_id = -1;
-    LoadPresetList();
-    snprintf(g_status, sizeof(g_status), "Preset deleted.");
-}
-
 /* ------------------------------------------------------------------ */
-/* Field registry                                                      */
-/* ------------------------------------------------------------------ */
-
-static void fields_reset(void) { g_nfields = 0; g_dd_count = 0; }
-
-static int
-field_reg(int type, char *buf, size_t bufsz, int maxval,
-          void (*action)(void *), void *arg,
-          int row, int col, int width)
-{
-    Field *f;
-    if (g_nfields >= MAX_FIELDS) return -1;
-    f         = &g_fields[g_nfields];
-    f->type   = type;
-    f->buf    = buf;
-    f->bufsz  = bufsz;
-    f->maxval = maxval;
-    f->action = action;
-    f->arg    = arg;
-    f->row    = row;
-    f->col    = col;
-    f->width  = width;
-    return g_nfields++;
-}
-
-/* ------------------------------------------------------------------ */
-/* Drawing primitives                                                  */
-/* ------------------------------------------------------------------ */
-
-
-static void
-draw_box_bottom(int row, int col, int width)
-{
-    attron(COLOR_PAIR(CP_BOX_LINE));
-    mvaddch(row, col, g_ll);
-    mvhline(row, col + 1, g_hl, width - 2);
-    mvaddch(row, col + width - 1, g_lr);
-    attroff(COLOR_PAIR(CP_BOX_LINE));
-}
-
-static void
-draw_box_top_plain(int row, int col, int width)
-{
-    attron(COLOR_PAIR(CP_BOX_LINE));
-    mvaddch(row, col, g_ul);
-    mvhline(row, col + 1, g_hl, width - 2);
-    mvaddch(row, col + width - 1, g_ur);
-    attroff(COLOR_PAIR(CP_BOX_LINE));
-}
-
-static void
-draw_h_separator(int row, int col, int width)
-{
-    attron(COLOR_PAIR(CP_BOX_LINE));
-    mvaddch(row, col, g_lt);
-    mvhline(row, col + 1, g_hl, width - 2);
-    mvaddch(row, col + width - 1, g_rt);
-    attroff(COLOR_PAIR(CP_BOX_LINE));
-}
-
-static void
-draw_box_sides(int row, int col, int width)
-{
-    attron(COLOR_PAIR(CP_BOX_LINE));
-    mvaddch(row, col, g_vl);
-    attroff(COLOR_PAIR(CP_BOX_LINE));
-    attron(COLOR_PAIR(CP_BOX));
-    hline(' ', width - 2);
-    attroff(COLOR_PAIR(CP_BOX));
-    attron(COLOR_PAIR(CP_BOX_LINE));
-    mvaddch(row, col + width - 1, g_vl);
-    attroff(COLOR_PAIR(CP_BOX_LINE));
-}
-
-/* Popup frame: border drawn with the current attributes, plus a drop
- * shadow (one column right, one row below) recolored in place.       */
-static void
-draw_popup_frame(int top, int left, int height, int width)
-{
-    int rows = getmaxy(stdscr);
-    int cols = getmaxx(stdscr);
-    int r;
-
-    mvaddch(top, left, g_ul);
-    mvhline(top, left + 1, g_hl, width - 2);
-    mvaddch(top, left + width - 1, g_ur);
-    mvvline(top + 1, left, g_vl, height - 2);
-    mvvline(top + 1, left + width - 1, g_vl, height - 2);
-    mvaddch(top + height - 1, left, g_ll);
-    mvhline(top + height - 1, left + 1, g_hl, width - 2);
-    mvaddch(top + height - 1, left + width - 1, g_lr);
-
-    if (!has_colors()) return;
-    if (left + width < cols)
-        for (r = top + 1; r <= top + height && r < rows; r++)
-            mvchgat(r, left + width, 1, A_NORMAL, CP_BUTTON, NULL);
-    if (top + height < rows && left + 1 < cols)
-        mvchgat(top + height, left + 1,
-                (left + width < cols ? width : cols - left - 1),
-                A_NORMAL, CP_BUTTON, NULL);
-}
-
-/* Section title row inside the flat main box */
-static void
-draw_section_title(int row, int col, int width, const char *title)
-{
-    draw_box_sides(row, col, width);
-    attron(A_BOLD | COLOR_PAIR(CP_BOX));
-    mvprintw(row, col + INDENT, "  %s", title);
-    attroff(A_BOLD | COLOR_PAIR(CP_BOX));
-}
-
-static int
-draw_textfield(int row, int col, int width,
-               char *buf, size_t bufsz, int type, int maxval)
-{
-    int idx     = field_reg(type, buf, bufsz, maxval, NULL, NULL, row, col, width);
-    int focused = (idx >= 0 && idx == g_focus);
-    int len     = (int)strlen(buf);
-    int i;
-
-    if (focused)
-        attron(COLOR_PAIR(CP_INPUT) | A_BOLD | (g_basic_colors ? A_REVERSE : 0));
-    else
-        attron(COLOR_PAIR(CP_INPUT));
-    move(row, col);
-    for (i = 0; i < width; i++)
-        addch(i < len ? (unsigned char)buf[i] : ' ');
-    if (focused)
-        attroff(COLOR_PAIR(CP_INPUT) | A_BOLD | A_REVERSE);
-    else
-        attroff(COLOR_PAIR(CP_INPUT));
-    return idx;
-}
-
-static int
-draw_button(int row, int col, const char *label,
-            void (*action)(void *), void *arg)
-{
-    int width   = (int)strlen(label) + 2;
-    int idx     = field_reg(FT_BUTTON, NULL, 0, 0, action, arg, row, col, width);
-    int focused = (idx >= 0 && idx == g_focus);
-
-    if (focused)
-        attron(COLOR_PAIR(CP_BUTTON) | A_REVERSE | A_BOLD);
-    else
-        attron(COLOR_PAIR(CP_BUTTON));
-    mvprintw(row, col, " %s ", label);
-    if (focused)
-        attroff(COLOR_PAIR(CP_BUTTON) | A_REVERSE | A_BOLD);
-    else
-        attroff(COLOR_PAIR(CP_BUTTON));
-    return idx;
-}
-
-static void
-draw_label(int row, const char *text)
-{
-    int tw  = (int)strlen(text);
-    int col = INDENT + LABEL_W - tw;
-    if (col < INDENT) col = INDENT;
-    attron(COLOR_PAIR(CP_BOX));
-    mvprintw(row, col, "%s", text);
-    attroff(COLOR_PAIR(CP_BOX));
-}
-
-static int field_col(void) { return INDENT + LABEL_W + 1; }
-
-static void
-draw_hms_fields(int row, int fc, char *hh, char *mm, char *ss)
-{
-    draw_textfield(row, fc,      5, hh, 8, FT_SPINNER, 999);
-    attron(COLOR_PAIR(CP_BOX));
-    mvprintw(row, fc + 5, ":");
-    attroff(COLOR_PAIR(CP_BOX));
-    draw_textfield(row, fc + 6,  4, mm, 8, FT_SPINNER, 59);
-    attron(COLOR_PAIR(CP_BOX));
-    mvprintw(row, fc + 10, ":");
-    attroff(COLOR_PAIR(CP_BOX));
-    draw_textfield(row, fc + 11, 4, ss, 8, FT_SPINNER, 59);
-}
-
-static int
-draw_dropdown(int row, int col, int width,
-              const char **options, int *index, char *buf, size_t bufsz,
-              void (*on_confirm)(int))
-{
-    DropdownMeta *dm;
-    int n, idx, focused, len, i;
-    const char *val;
-
-    for (n = 0; options[n]; n++);
-
-    if (g_dd_count >= MAX_DROPDOWNS) return -1;
-    dm             = &g_dd_store[g_dd_count++];
-    dm->options    = options;
-    dm->index      = index;
-    dm->buf        = buf;
-    dm->bufsz      = bufsz;
-    dm->on_confirm = on_confirm;
-
-    idx     = field_reg(FT_DROPDOWN, buf, bufsz, n - 1, NULL, dm, row, col, width);
-    focused = (idx >= 0 && idx == g_focus);
-    val     = (*index >= 0 && *index < n) ? options[*index] : "";
-    len     = (int)strlen(val);
-
-    if (focused)
-        attron(COLOR_PAIR(CP_INPUT) | A_BOLD | (g_basic_colors ? A_REVERSE : 0));
-    else
-        attron(COLOR_PAIR(CP_INPUT));
-    move(row, col);
-    for (i = 0; i < width - 2; i++)
-        addch(i < len ? (unsigned char)val[i] : ' ');
-    addch(' ');
-    addch(ACS_DARROW);
-    if (focused)
-        attroff(COLOR_PAIR(CP_INPUT) | A_BOLD | A_REVERSE);
-    else
-        attroff(COLOR_PAIR(CP_INPUT));
-    return idx;
-}
-
-static void
-open_dropdown_popup(Field *f)
-{
-    DropdownMeta *dm = (DropdownMeta *)f->arg;
-    int n, rows, max_vis;
-    if (!dm) return;
-    g_popup_open   = 1;
-    g_popup_dm     = dm;
-    g_popup_frow   = f->row;
-    g_popup_fcol   = f->col;
-    g_popup_fwidth = f->width;
-    g_popup_sel    = *dm->index;
-    g_popup_scroll = 0;
-    for (n = 0; dm->options[n]; n++);
-    rows    = getmaxy(stdscr);
-    max_vis = rows - f->row - 3;
-    if (max_vis < 3)      max_vis = 3;
-    if (max_vis > n)      max_vis = n;
-    g_popup_scroll = g_popup_sel - max_vis / 2;
-    if (g_popup_scroll < 0)           g_popup_scroll = 0;
-    if (g_popup_scroll > n - max_vis) g_popup_scroll = n - max_vis;
-    if (g_popup_scroll < 0)           g_popup_scroll = 0;
-}
-
-/* ------------------------------------------------------------------ */
-/* Button callbacks                                                    */
+/* Button callbacks                                                   */
 /* ------------------------------------------------------------------ */
 
 static void cb_save_preset(void *arg) { (void)arg; SavePreset(); }
@@ -1075,60 +638,14 @@ cb_apply_defaults(void *arg)
 }
 
 static void
-rebuild_search_matches(void)
-{
-    int i;
-    char query[PRESET_NAME_LEN];
-    int  qlen = (int)strlen(g_searchpopup_buf);
-
-    for (i = 0; i < qlen && i < (int)sizeof(query) - 1; i++) {
-        unsigned char c = (unsigned char)g_searchpopup_buf[i];
-        query[i] = (char)(c >= 'A' && c <= 'Z' ? c + 32 : c);
-    }
-    query[qlen] = '\0';
-
-    g_searchpopup_nmatches = 0;
-    for (i = 0; i < g_preset_count && g_searchpopup_nmatches < MAX_SEARCH_MATCHES; i++) {
-        if (qlen == 0) {
-            g_searchpopup_matches[g_searchpopup_nmatches++] = i;
-        } else {
-            const char *name = g_presets[i].name;
-            int nlen = (int)strlen(name);
-            int j, k;
-            for (j = 0; j <= nlen - qlen; j++) {
-                int match = 1;
-                for (k = 0; k < qlen; k++) {
-                    unsigned char c = (unsigned char)name[j + k];
-                    char lc = (char)(c >= 'A' && c <= 'Z' ? c + 32 : c);
-                    if (lc != query[k]) { match = 0; break; }
-                }
-                if (match) { g_searchpopup_matches[g_searchpopup_nmatches++] = i; break; }
-            }
-        }
-    }
-
-    {
-        int total = g_searchpopup_nmatches + (g_searchpopup_show_new ? 1 : 0);
-        if (g_searchpopup_sel >= total)
-            g_searchpopup_sel = total > 0 ? total - 1 : 0;
-        if (g_searchpopup_sel < 0)
-            g_searchpopup_sel = 0;
-    }
-}
-
-static void
 cb_open_search_popup_impl(int show_new)
 {
     if (!show_new && g_preset_count == 0) {
         snprintf(g_status, sizeof(g_status), "No presets saved.");
         return;
     }
-    g_searchpopup_show_new = show_new;
-    g_searchpopup_buf[0]   = '\0';
-    g_searchpopup_sel      = 0;
-    g_searchpopup_scroll   = 0;
-    rebuild_search_matches();
-    g_searchpopup_open     = 1;
+    g_search_popup.extra = show_new ? "new" : NULL;
+    listpopup_open(&g_search_popup);
 }
 
 static void cb_open_search_popup(void *a)    { (void)a; cb_open_search_popup_impl(0); }
@@ -1878,223 +1395,6 @@ draw_config_tab(int row)
 }
 
 /* ------------------------------------------------------------------ */
-/* Dropdown popup                                                      */
-/* ------------------------------------------------------------------ */
-
-static void
-draw_dropdown_popup(void)
-{
-    int n, i, rows, cols, pw, max_vis, ph, pr, pc;
-    const char *val;
-
-    if (!g_popup_open || !g_popup_dm) return;
-
-    for (n = 0; g_popup_dm->options[n]; n++);
-
-    cols = getmaxx(stdscr);
-    rows = getmaxy(stdscr);
-
-    pw = g_popup_fwidth;
-    for (i = 0; i < n; i++) {
-        int l = (int)strlen(g_popup_dm->options[i]) + 4;
-        if (l > pw) pw = l;
-    }
-    if (pw > cols) pw = cols;
-
-    max_vis = rows - g_popup_frow - 3;
-    if (max_vis < 3) max_vis = 3;
-    if (max_vis > n) max_vis = n;
-
-    ph = max_vis + 2;
-    pr = g_popup_frow + 1;
-    if (pr + ph > rows - 2)
-        pr = g_popup_frow - ph;
-    if (pr < 0) pr = 0;
-
-    pc = g_popup_fcol;
-    if (pc + pw > cols) pc = cols - pw;
-    if (pc < 0) pc = 0;
-
-    if (g_popup_sel < g_popup_scroll)
-        g_popup_scroll = g_popup_sel;
-    if (g_popup_sel >= g_popup_scroll + max_vis)
-        g_popup_scroll = g_popup_sel - max_vis + 1;
-
-    draw_popup_frame(pr, pc, ph, pw);
-
-    for (i = 0; i < max_vis; i++) {
-        int idx    = g_popup_scroll + i;
-        int is_sel = (idx == g_popup_sel);
-        int j, vlen;
-
-        val  = g_popup_dm->options[idx];
-        vlen = (int)strlen(val);
-
-        if (is_sel) attron(A_REVERSE | A_BOLD);
-        move(pr + 1 + i, pc + 1);
-        if (i == 0 && g_popup_scroll > 0)
-            addch(ACS_UARROW);
-        else if (i == max_vis - 1 && g_popup_scroll + max_vis < n)
-            addch(ACS_DARROW);
-        else
-            addch(' ');
-        for (j = 0; j < pw - 3; j++)
-            addch(j < vlen ? (unsigned char)val[j] : ' ');
-        if (is_sel) attroff(A_REVERSE | A_BOLD);
-    }
-}
-
-static void
-draw_edit_popup(void)
-{
-    int cols, rows, pw, fw, pr, pc, len, i;
-
-    if (!g_editpopup_open) return;
-
-    cols = getmaxx(stdscr);
-    rows = getmaxy(stdscr);
-
-    pw = 54;
-    if (pw > cols - 2) pw = cols - 2;
-    fw = pw - 10;   /* text field width inside the box */
-
-    pr = rows / 2 - 2;
-    pc = (cols - pw) / 2;
-    if (pc < 0) pc = 0;
-
-    draw_popup_frame(pr, pc, 4, pw);
-
-    /* Edit row */
-    mvprintw(pr + 1, pc + 1, " Edit: ");
-    len = (int)strlen(g_editpopup_buf);
-    attron(A_REVERSE | A_BOLD);
-    move(pr + 1, pc + 8);
-    for (i = 0; i < fw; i++)
-        addch(i < len ? (unsigned char)g_editpopup_buf[i] : ' ');
-    attroff(A_REVERSE | A_BOLD);
-
-    /* Hint row */
-    attron(A_DIM);
-    mvprintw(pr + 2, pc + 1, "%-*.*s", pw - 2, pw - 2, " Enter=save  Esc=cancel");
-    attroff(A_DIM);
-
-    /* Place cursor at end of text */
-    {
-        int cpos = len < fw ? len : fw - 1;
-        move(pr + 1, pc + 8 + cpos);
-        curs_set(1);
-    }
-}
-
-static void
-draw_search_popup(void)
-{
-#define SEARCH_VIS 8
-    int rows, cols, pw, pr, pc, fw, i, len, r;
-
-    if (!g_searchpopup_open) return;
-
-    rows = getmaxy(stdscr);
-    cols = getmaxx(stdscr);
-
-    pw = 54;
-    if (pw > cols - 2) pw = cols - 2;
-    if (pw < 22) pw = 22;
-    fw = pw - 12;   /* search field width */
-
-    /* height: top + search + sep + SEARCH_VIS list rows + hint + bottom */
-    pr = (rows - (SEARCH_VIS + 5)) / 2;
-    if (pr < 0) pr = 0;
-    pc = (cols - pw) / 2;
-    if (pc < 0) pc = 0;
-
-    /* scroll adjustment */
-    if (g_searchpopup_sel < g_searchpopup_scroll)
-        g_searchpopup_scroll = g_searchpopup_sel;
-    if (g_searchpopup_sel >= g_searchpopup_scroll + SEARCH_VIS)
-        g_searchpopup_scroll = g_searchpopup_sel - SEARCH_VIS + 1;
-
-    draw_popup_frame(pr, pc, SEARCH_VIS + 5, pw);
-    r = pr + 1;
-
-    /* Search input row */
-    len = (int)strlen(g_searchpopup_buf);
-    mvprintw(r, pc + 1, " Search: ");
-    attron(A_REVERSE | A_BOLD);
-    move(r, pc + 10);
-    for (i = 0; i < fw; i++)
-        addch(i < len ? (unsigned char)g_searchpopup_buf[i] : ' ');
-    attroff(A_REVERSE | A_BOLD);
-    r++;
-
-    /* Separator */
-    mvaddch(r, pc, g_lt);
-    mvhline(r, pc + 1, g_hl, pw - 2);
-    mvaddch(r, pc + pw - 1, g_rt);
-    r++;
-
-    /* List rows */
-    {
-        int total = g_searchpopup_nmatches + (g_searchpopup_show_new ? 1 : 0);
-        for (i = 0; i < SEARCH_VIS; i++) {
-            int list_idx = g_searchpopup_scroll + i;
-            if (list_idx < total) {
-                int is_sel = (list_idx == g_searchpopup_sel);
-                int j;
-                if (is_sel) attron(A_REVERSE | A_BOLD);
-                move(r, pc + 1);
-                if (i == 0 && g_searchpopup_scroll > 0)
-                    addch(ACS_UARROW);
-                else if (i == SEARCH_VIS - 1 &&
-                         g_searchpopup_scroll + SEARCH_VIS < total)
-                    addch(ACS_DARROW);
-                else
-                    addch(' ');
-                if (g_searchpopup_show_new && list_idx == 0) {
-                    const char *label = "new";
-                    int llen = 3;
-                    for (j = 0; j < pw - 3; j++)
-                        addch(j < llen ? (unsigned char)label[j] : ' ');
-                } else {
-                    int pi = list_idx - (g_searchpopup_show_new ? 1 : 0);
-                    const char *name = g_presets[g_searchpopup_matches[pi]].name;
-                    int nlen = (int)strlen(name);
-                    for (j = 0; j < pw - 3; j++)
-                        addch(j < nlen ? (unsigned char)name[j] : ' ');
-                }
-                if (is_sel) attroff(A_REVERSE | A_BOLD);
-            } else if (i == 0 && total == 0) {
-                attron(A_DIM);
-                mvprintw(r, pc + 1, " %-*s", pw - 3, "No matches");
-                attroff(A_DIM);
-            } else {
-                mvprintw(r, pc + 1, "%-*s", pw - 2, "");
-            }
-            r++;
-        }
-    }
-
-    /* Hint row */
-    attron(A_DIM);
-    {
-        const char *hint = " Enter=load  Esc=cancel  Up/Down=select";
-        int hlen = (int)strlen(hint);
-        int j;
-        mvprintw(r, pc + 1, "%s", hint);
-        for (j = hlen + 1; j < pw - 1; j++) mvaddch(r, pc + j, ' ');
-    }
-    attroff(A_DIM);
-
-    /* Cursor in search field */
-    {
-        int cpos = len < fw ? len : fw - 1;
-        move(pr + 1, pc + 10 + cpos);
-        curs_set(1);
-    }
-#undef SEARCH_VIS
-}
-
-/* ------------------------------------------------------------------ */
 /* Help tab                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -2131,9 +1431,7 @@ draw_help_tab(int row)
     attroff(A_UNDERLINE | COLOR_PAIR(CP_BOX));
     attron(COLOR_PAIR(CP_BOX));
     mvprintw(r++, INDENT, "  Enter / Space   Open dropdown");
-    mvprintw(r++, INDENT, "  Up / Down       Navigate list");
     mvprintw(r++, INDENT, "  Esc             Close dropdown");
-    mvprintw(r++, INDENT, "  d               Delete preset");
     attroff(COLOR_PAIR(CP_BOX));
     r++;
 
@@ -2150,9 +1448,9 @@ draw_help_tab(int row)
     mvprintw(r++, INDENT, "Config tab");
     attroff(A_UNDERLINE | COLOR_PAIR(CP_BOX));
     attron(COLOR_PAIR(CP_BOX));
-    mvprintw(r++, INDENT, "  Up / Down       Select item");
-    mvprintw(r++, INDENT, "  Enter           Add item");
-    mvprintw(r++, INDENT, "  d               Delete item");
+    mvprintw(r++, INDENT, "  Select          Pick item to edit");
+    mvprintw(r++, INDENT, "  Save as new     Add item from Name");
+    mvprintw(r++, INDENT, "  Delete          Delete selected item");
     attroff(COLOR_PAIR(CP_BOX));
 
     (void)cols;
@@ -2304,61 +1602,15 @@ draw_all(void)
     g_focus_stale = 0;
     if (g_focus >= g_nfields) g_focus = g_nfields - 1;
 
-    /* ---- Cursor on focused text field ---- */
-    if (g_focus >= 0 && g_focus < g_nfields) {
-        Field *f = &g_fields[g_focus];
-        if (f->type == FT_TEXT || f->type == FT_DIGITS || f->type == FT_SPINNER) {
-            int len  = (int)strlen(f->buf);
-            int cpos = len < f->width ? len : f->width - 1;
-            move(f->row, f->col + cpos);
-            curs_set(1);
-        } else {
-            curs_set(0);
-        }
-    } else {
-        curs_set(0);
-    }
-
+    form_place_cursor();
     draw_dropdown_popup();
-    draw_edit_popup();
-    draw_search_popup();
+    listpopup_draw(&g_search_popup);
     refresh();
 }
 
 /* ------------------------------------------------------------------ */
 /* Input handling                                                      */
 /* ------------------------------------------------------------------ */
-
-static int
-buf_insert(char *buf, size_t bufsz, int ch)
-{
-    int len = (int)strlen(buf);
-    if (len + 1 >= (int)bufsz) return 0;
-    buf[len]     = (char)ch;
-    buf[len + 1] = '\0';
-    return 1;
-}
-
-static int
-buf_backspace(char *buf)
-{
-    int len = (int)strlen(buf);
-    if (len == 0) return 0;
-    buf[len - 1] = '\0';
-    return 1;
-}
-
-static void
-confirm_popup(void)
-{
-    DropdownMeta *dm = g_popup_dm;
-    *dm->index = g_popup_sel;
-    snprintf(dm->buf, dm->bufsz, "%s", dm->options[g_popup_sel]);
-    AutoUpdatePresetName();
-    g_popup_open = 0;
-    g_popup_dm   = NULL;
-    if (dm->on_confirm) dm->on_confirm(g_popup_sel);
-}
 
 /* Switch tab and put focus on its first content field (field 0 is the tab bar) */
 static void
@@ -2367,37 +1619,6 @@ switch_tab(int tab)
     g_tab         = tab;
     g_focus       = 1;
     g_focus_stale = 1;
-}
-
-/* Focus the nearest field in the row above (dir < 0) or below (dir > 0).
- * Returns 0 when there is no field in that direction. */
-static int
-focus_vertical(int dir)
-{
-    Field *cur = &g_fields[g_focus];
-    int cx     = cur->col + cur->width / 2;
-    int best   = -1, best_row = 0, best_dx = 0;
-    int i;
-
-    for (i = 0; i < g_nfields; i++) {
-        Field *f = &g_fields[i];
-        int dx;
-        if (dir < 0 ? f->row >= cur->row : f->row <= cur->row)
-            continue;
-        dx = f->col + f->width / 2 - cx;
-        if (dx < 0) dx = -dx;
-        if (best < 0 ||
-            (dir < 0 ? f->row > best_row : f->row < best_row) ||
-            (f->row == best_row && dx < best_dx)) {
-            best     = i;
-            best_row = f->row;
-            best_dx  = dx;
-        }
-    }
-    if (best < 0) return 0;
-    g_focus     = best;
-    g_status[0] = '\0';
-    return 1;
 }
 
 static int handle_key(int ch)
@@ -2432,108 +1653,39 @@ static int handle_key(int ch)
         return 0;
     }
 
-    /* Edit popup mode - intercept all keys */
-    if (g_editpopup_open) {
-        if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
-            buf_backspace(g_editpopup_buf);
-        else if (ch >= 32 && ch < 127)
-            buf_insert(g_editpopup_buf, sizeof(g_editpopup_buf), ch);
-        else if (ch == '\n' || ch == '\r') {
-            if (g_editpopup_buf[0] &&
-                strcmp(g_editpopup_buf, g_editpopup_orig) != 0) {
-                RenameOption(g_editpopup_dl->category,
-                             g_editpopup_orig, g_editpopup_buf);
-                snprintf(g_editpopup_dl->items[g_editpopup_idx],
-                         MAX_OPTION_LEN, "%s", g_editpopup_buf);
-                dynlist_rebuild_ptrs(g_editpopup_dl);
-                sync_dropdown_indices();
-                LoadPresetList();
-                snprintf(g_status, sizeof(g_status),
-                         "Renamed to: %s", g_editpopup_buf);
-            }
-            g_editpopup_open = 0;
-            g_editpopup_dl   = NULL;
-        } else if (ch == 27) { /* ESC */
-            g_editpopup_open = 0;
-            g_editpopup_dl   = NULL;
+    /* Search preset popup - intercepts all keys while open */
+    switch (listpopup_key(&g_search_popup, ch)) {
+    case LP_IGNORED:
+        break;
+    case LP_PICKED: {
+        int idx = listpopup_selected(&g_search_popup);
+        if (idx < 0) {                       /* "new" row */
+            g_preset_name[0]   = '\0';
+            g_preset_loaded_id = -1;
+            g_status[0]        = '\0';
+            listpopup_close(&g_search_popup);
+        } else if (AnyTimerRunning()) {
+            snprintf(g_status, sizeof(g_status),
+                     "Stop all timers before loading a preset.");
+        } else {
+            LoadPresetIntoTimers(g_presets[idx].id);
+            g_preset_loaded_id = g_presets[idx].id;
+            g_workflow_phase   = 0;
+            snprintf(g_preset_name, sizeof(g_preset_name),
+                     "%s", g_presets[idx].name);
+            snprintf(g_status, sizeof(g_status),
+                     "Loaded: %s", g_presets[idx].name);
+            listpopup_close(&g_search_popup);
         }
+        return 0;
+    }
+    default:
         return 0;
     }
 
-    /* Search preset popup mode - intercept all keys */
-    if (g_searchpopup_open) {
-        if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b') {
-            buf_backspace(g_searchpopup_buf);
-            rebuild_search_matches();
-        } else if (ch >= 32 && ch < 127) {
-            buf_insert(g_searchpopup_buf, sizeof(g_searchpopup_buf), ch);
-            rebuild_search_matches();
-        } else if (ch == KEY_UP) {
-            if (g_searchpopup_sel > 0) {
-                g_searchpopup_sel--;
-                if (g_searchpopup_sel < g_searchpopup_scroll)
-                    g_searchpopup_scroll = g_searchpopup_sel;
-            }
-        } else if (ch == KEY_DOWN) {
-            int total = g_searchpopup_nmatches + (g_searchpopup_show_new ? 1 : 0);
-            if (g_searchpopup_sel < total - 1) {
-                g_searchpopup_sel++;
-                if (g_searchpopup_sel >= g_searchpopup_scroll + 8)
-                    g_searchpopup_scroll = g_searchpopup_sel - 7;
-            }
-        } else if (ch == '\n' || ch == '\r') {
-            if (g_searchpopup_show_new && g_searchpopup_sel == 0) {
-                g_preset_name[0]   = '\0';
-                g_preset_loaded_id = -1;
-                g_status[0]        = '\0';
-                g_searchpopup_open = 0;
-            } else if (g_searchpopup_nmatches > 0) {
-                int pi  = g_searchpopup_sel - (g_searchpopup_show_new ? 1 : 0);
-                int idx = g_searchpopup_matches[pi];
-                if (AnyTimerRunning()) {
-                    snprintf(g_status, sizeof(g_status),
-                             "Stop all timers before loading a preset.");
-                } else {
-                    LoadPresetIntoTimers(g_presets[idx].id);
-                    g_preset_loaded_id = g_presets[idx].id;
-                    g_workflow_phase   = 0;
-                    snprintf(g_preset_name, sizeof(g_preset_name),
-                             "%s", g_presets[idx].name);
-                    snprintf(g_status, sizeof(g_status),
-                             "Loaded: %s", g_presets[idx].name);
-                    g_searchpopup_open = 0;
-                }
-            }
-        } else if (ch == 27) { /* ESC */
-            g_searchpopup_open = 0;
-        }
+    /* Dropdown popup - intercepts all keys while open */
+    if (form_popup_key(ch))
         return 0;
-    }
-
-    /* Popup mode - intercept all keys */
-    if (g_popup_open && g_popup_dm) {
-        int n;
-        for (n = 0; g_popup_dm->options[n]; n++);
-        if (ch == KEY_UP) {
-            g_popup_sel = (g_popup_sel - 1 + n) % n;
-        } else if (ch == KEY_DOWN) {
-            g_popup_sel = (g_popup_sel + 1) % n;
-        } else if (ch == '\n' || ch == '\r' || ch == ' ') {
-            confirm_popup();
-        } else if (ch == 27) { /* ESC */
-            g_popup_open = 0;
-            g_popup_dm   = NULL;
-        } else if (ch == '\t') {
-            confirm_popup();
-            g_focus = (g_focus + 1) % g_nfields;
-            g_status[0] = '\0';
-        } else if (ch == KEY_BTAB) {
-            confirm_popup();
-            g_focus = (g_focus - 1 + g_nfields) % g_nfields;
-            g_status[0] = '\0';
-        }
-        return 0;
-    }
 
     /* ESC - leave the current field for the tab bar (field 0) */
     if (ch == 27) {
@@ -2561,18 +1713,6 @@ static int handle_key(int ch)
         }
     }
 
-    /* Tab / Shift+Tab */
-    if (ch == '\t') {
-        g_focus = (g_focus + 1) % g_nfields;
-        g_status[0] = '\0';
-        return 0;
-    }
-    if (ch == KEY_BTAB) {
-        g_focus = (g_focus - 1 + g_nfields) % g_nfields;
-        g_status[0] = '\0';
-        return 0;
-    }
-
     /* Help tab: Up/Down scrolls content (no interactive fields) */
     if (g_tab == TAB_HELP) {
         if (ch == KEY_UP) {
@@ -2585,147 +1725,24 @@ static int handle_key(int ch)
         }
     }
 
+    /* Tab bar: Left/Right switch tabs */
     f = &g_fields[g_focus];
-
-    /* Arrow navigation between fields.  Left/Right = previous/next field
-     * (except on the tab bar, where they switch tabs).  Up/Down move to the
-     * row above/below, unless the field uses them itself (spinner, list,
-     * dropdown). */
-    if (f->type != FT_TABS && (ch == KEY_LEFT || ch == KEY_RIGHT)) {
-        g_focus = (g_focus + (ch == KEY_RIGHT ? 1 : -1) + g_nfields) % g_nfields;
-        g_status[0] = '\0';
-        return 0;
-    }
-    if ((ch == KEY_UP || ch == KEY_DOWN) &&
-        (f->type == FT_TEXT || f->type == FT_DIGITS ||
-         f->type == FT_BUTTON || f->type == FT_TABS)) {
-        focus_vertical(ch == KEY_UP ? -1 : +1);
-        return 0;
-    }
-
-    switch (f->type) {
-
-    case FT_TABS:
-        if (ch == KEY_RIGHT) {
+    if (f->type == FT_TABS && (ch == KEY_LEFT || ch == KEY_RIGHT)) {
+        if (ch == KEY_RIGHT)
             g_tab = (g_tab + 1) % TAB_COUNT;
-            g_focus = 0;
-        } else if (ch == KEY_LEFT) {
+        else
             g_tab = (g_tab - 1 + TAB_COUNT) % TAB_COUNT;
-            g_focus = 0;
-        }
-        break;
-
-    case FT_TEXT:
-        if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
-            buf_backspace(f->buf);
-        else if (ch >= 32 && ch < 127)
-            buf_insert(f->buf, f->bufsz, ch);
-        break;
-
-    case FT_DIGITS:
-        if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
-            buf_backspace(f->buf);
-        else if (ch >= '0' && ch <= '9')
-            buf_insert(f->buf, f->bufsz, ch);
-        break;
-
-    case FT_SPINNER:
-        if (ch == KEY_UP)
-            AdjustBuf(f->buf, f->bufsz, +1, f->maxval);
-        else if (ch == KEY_DOWN)
-            AdjustBuf(f->buf, f->bufsz, -1, f->maxval);
-        else if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
-            buf_backspace(f->buf);
-        else if (ch >= '0' && ch <= '9')
-            buf_insert(f->buf, f->bufsz, ch);
-        break;
-
-    case FT_BUTTON:
-        if (ch == '\n' || ch == '\r' || ch == ' ')
-            if (f->action) f->action(f->arg);
-        break;
-
-    case FT_LIST:
-        if (f->arg != NULL) {
-            /* Config DynList */
-            DynList *dl = (DynList *)f->arg;
-            if (ch == KEY_UP) {
-                if (dl->sel > 0) {
-                    dl->sel--;
-                    if (dl->sel < dl->scroll)
-                        dl->scroll = dl->sel;
-                }
-            } else if (ch == KEY_DOWN) {
-                if (dl->sel < dl->count - 1) {
-                    dl->sel++;
-                    if (dl->sel >= dl->scroll + VISIBLE_CFG_LIST)
-                        dl->scroll = dl->sel - VISIBLE_CFG_LIST + 1;
-                }
-            } else if (ch == 'd' && dl->count > 0) {
-                DeleteOption(dl->category, dl->items[dl->sel]);
-                dynlist_delete(dl, dl->sel);
-                sync_dropdown_indices();
-                snprintf(g_status, sizeof(g_status), "Deleted.");
-            }
-        } else {
-            /* Preset list */
-            if (ch == KEY_UP) {
-                if (g_preset_sel > 0) {
-                    g_preset_sel--;
-                    if (g_preset_sel < g_preset_scroll)
-                        g_preset_scroll = g_preset_sel;
-                }
-            } else if (ch == KEY_DOWN) {
-                if (g_preset_sel < g_preset_count - 1) {
-                    g_preset_sel++;
-                    if (g_preset_sel >= g_preset_scroll + VISIBLE_PRESETS)
-                        g_preset_scroll = g_preset_sel - VISIBLE_PRESETS + 1;
-                }
-            } else if (ch == '\n' || ch == '\r' || ch == ' ') {
-                if (!AnyTimerRunning() && g_preset_sel >= 0 &&
-                    g_preset_sel < g_preset_count) {
-                    LoadPresetIntoTimers(g_presets[g_preset_sel].id);
-                    g_preset_loaded_id = g_presets[g_preset_sel].id;
-                    g_workflow_phase   = 0;
-                    snprintf(g_preset_name, sizeof(g_preset_name),
-                             "%s", g_presets[g_preset_sel].name);
-                    snprintf(g_status, sizeof(g_status),
-                             "Loaded: %s", g_presets[g_preset_sel].name);
-                } else if (AnyTimerRunning()) {
-                    snprintf(g_status, sizeof(g_status),
-                             "Stop all timers before loading a preset.");
-                }
-            } else if (ch == 'd') {
-                DeleteSelectedPreset();
-            }
-        }
-        break;
-
-    case FT_DROPDOWN: {
-        DropdownMeta *dm = (DropdownMeta *)f->arg;
-        int n;
-        if (!dm) break;
-        for (n = 0; dm->options[n]; n++);
-        if (ch == KEY_UP || ch == KEY_DOWN ||
-            ch == '\n' || ch == '\r' || ch == ' ') {
-            open_dropdown_popup(f);
-            if (ch == KEY_UP)
-                g_popup_sel = (g_popup_sel - 1 + n) % n;
-            else if (ch == KEY_DOWN)
-                g_popup_sel = (g_popup_sel + 1) % n;
-        }
-        break;
-    }
+        g_focus = 0;
+        return 0;
     }
 
+    form_field_key(ch);
     return 0;
 }
 
 /* ------------------------------------------------------------------ */
-/* Signals / main                                                      */
+/* Main                                                                */
 /* ------------------------------------------------------------------ */
-
-static void sigwinch_handler(int sig) { (void)sig; g_resize = 1; }
 
 int
 main(void)
@@ -2733,7 +1750,6 @@ main(void)
     int ch, quit = 0;
 
     signal(SIGCHLD, SIG_IGN);
-    signal(SIGWINCH, sigwinch_handler);
 
     InitTimers();
     OpenDatabase();
@@ -2770,61 +1786,7 @@ main(void)
     }
 #endif
 
-    setenv("NCURSES_NO_UTF8_ACS", "1", 0);
-    /* ESC closes popups / leaves fields; don't wait the default 1 s
-     * for a possible escape sequence.                                */
-    setenv("ESCDELAY", "25", 0);
-    setlocale(LC_ALL, "");
-    {
-        /* The wscons console (/dev/ttyC*) does not decode UTF-8: in a
-         * UTF-8 locale ncurses would send Unicode box characters that
-         * show up as garbage.  Use the C ctype there so ncurses emits
-         * DEC Special Graphics, which wscons does support.            */
-        char *tty = ttyname(STDIN_FILENO);
-        if (tty && strncmp(tty, "/dev/ttyC", 9) == 0)
-            setlocale(LC_CTYPE, "C");
-    }
-    initscr();
-    init_box_chars();
-    if (has_colors()) {
-        start_color();
-        use_default_colors();
-        init_pair(CP_BUTTON, COLOR_WHITE, COLOR_BLACK);
-        if (can_change_color() && COLORS >= 16) {
-            init_color(COLOR_BOX_BG,   12,  208, 208);
-            init_color(COLOR_BORDER,  560,  420, 150);
-            init_color(COLOR_APP_BG,  251,  251, 251);
-            init_color(COLOR_INPUT_BG,   51,  282, 282);
-            init_color(COLOR_PROG_GREEN,   0,  700, 200);
-            init_pair(CP_BOX,        -1, COLOR_BOX_BG);
-            init_pair(CP_BOX_LINE,   COLOR_BORDER, -1);
-            init_pair(CP_BOX_BORDER, COLOR_BOX_BG, COLOR_APP_BG);
-            init_pair(CP_BG,         -1, COLOR_APP_BG);
-            init_pair(CP_INPUT,      COLOR_WHITE, COLOR_INPUT_BG);
-            init_pair(CP_PROGRESS,   COLOR_BLACK, COLOR_PROG_GREEN);
-            init_pair(CP_ALARM,      COLOR_WHITE, COLOR_RED);
-        } else {
-            /* 8-color terminals (e.g. the wscons console): light text
-             * on black everywhere, with explicit colors - the default
-             * ones are unknown.  Input fields are yellow; the focused
-             * one is drawn in reverse video.                           */
-            g_basic_colors = 1;
-            init_pair(CP_BOX,        COLOR_WHITE, COLOR_BLACK);
-            init_pair(CP_BOX_LINE,   COLOR_YELLOW, COLOR_BLACK);
-            init_pair(CP_BOX_BORDER, COLOR_WHITE, COLOR_BLACK);
-            init_pair(CP_BG,         COLOR_WHITE, COLOR_BLACK);
-            init_pair(CP_INPUT,      COLOR_YELLOW, COLOR_BLACK);
-            init_pair(CP_PROGRESS,   COLOR_BLACK, COLOR_GREEN);
-            init_pair(CP_ALARM,      COLOR_WHITE, COLOR_RED);
-        }
-        bkgd(COLOR_PAIR(CP_BG));
-    }
-    cbreak();
-    noecho();
-    keypad(stdscr, TRUE);
-    nodelay(stdscr, TRUE);
-    curs_set(1);
-
+    tui_init();
     draw_all();
 
     while (!quit) {

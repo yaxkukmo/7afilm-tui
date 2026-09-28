@@ -33,16 +33,14 @@ typedef struct {
 extern CountdownTimer g_timers[TIMER_COUNT];
 
 /*
- * These globals live in 7afilm-tui.c but timer logic writes to them.
- * Declared here so timer.c can reference them without a full globals header.
+ * Lives in 7afilm-tui.c but timer logic writes to it.
+ * Declared here so timer.c can reference it without a full globals header.
  */
-extern char g_status[128];
 extern int  g_workflow_phase;
 
 void InitTimers(void);
 void FireAlarmPulse(CountdownTimer *t);
 long now_ms(void);
-void AdjustBuf(char *buf, size_t bufsz, int delta, int maxval);
 int  AnyTimerRunning(void);
 void ParseCountdownFields(CountdownTimer *t);
 void UpdateCountdownFields(CountdownTimer *t);
