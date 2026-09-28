@@ -7,6 +7,7 @@
 #include <locale.h>
 #include <stdlib.h>
 #include <string.h>
+#include <termios.h>
 #include <unistd.h>
 
 #define COLOR_BOX_BG     8  /* custom color #033535                    */
@@ -111,6 +112,15 @@ tui_init(void)
     if (has_colors())
         init_colors();
     cbreak();
+    {
+        /* cbreak() keeps XON/XOFF flow control, so the tty driver would
+         * swallow Ctrl+Q / Ctrl+S.  endwin() restores the saved modes. */
+        struct termios tio;
+        if (tcgetattr(STDIN_FILENO, &tio) == 0) {
+            tio.c_iflag &= ~(tcflag_t)IXON;
+            tcsetattr(STDIN_FILENO, TCSANOW, &tio);
+        }
+    }
     noecho();
     keypad(stdscr, TRUE);
     nodelay(stdscr, TRUE);
