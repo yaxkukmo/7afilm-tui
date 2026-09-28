@@ -5,7 +5,8 @@
  *
  *   7aorganizer-tui                  start the TUI
  *   7aorganizer-tui --import FILE    copy todos and calendar entries from a
- *                                    poc.db-style database (target must be
+ *                                    poc.db-style database or the tasks.db
+ *                                    of 7atodo / 7acal (target must be
  *                                    empty)
  *
  * The Dashboard is the main screen: today's entries, open todos (and

@@ -9,6 +9,34 @@
 /* Schema                                                              */
 /* ------------------------------------------------------------------ */
 
+/* A random UUID (version 4) in SQL, for the triggers below */
+#define UUID_SQL \
+    "lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4'" \
+    " || substr(lower(hex(randomblob(2))), 2) || '-'" \
+    " || substr('89ab', 1 + (abs(random()) % 4), 1)" \
+    " || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))"
+
+/* Sync bookkeeping for one table, kept by triggers so that every
+ * program writing the database (7atodo and 7acal too) gets it right:
+ * a new row gets a uuid, a changed row a new updated_at unless the
+ * writer set one itself (7async applying a newer copy from the server),
+ * and a deleted row leaves its uuid in deleted_items. */
+#define SYNC_TRIGGERS(table, kind) \
+    "CREATE TRIGGER " table "_new AFTER INSERT ON " table \
+    " WHEN NEW.uuid IS NULL BEGIN" \
+    "  UPDATE " table " SET uuid = " UUID_SQL "," \
+    "   updated_at = COALESCE(updated_at, datetime('now')) WHERE id = NEW.id;" \
+    " END;" \
+    "CREATE TRIGGER " table "_touch AFTER UPDATE ON " table \
+    " WHEN NEW.updated_at IS OLD.updated_at AND NEW.uuid IS OLD.uuid BEGIN" \
+    "  UPDATE " table " SET updated_at = datetime('now') WHERE id = NEW.id;" \
+    " END;" \
+    "CREATE TRIGGER " table "_gone AFTER DELETE ON " table \
+    " WHEN OLD.uuid IS NOT NULL BEGIN" \
+    "  INSERT OR IGNORE INTO deleted_items (uuid, kind, deleted_at)" \
+    "  VALUES (OLD.uuid, '" kind "', datetime('now'));" \
+    " END;"
+
 /* Append-only: a released step is never edited, changes go into a
  * new one.  The tables keep the poc.db layout so its data imports
  * as is. */
@@ -51,6 +79,23 @@ static const char *const migrations[] = {
     /* 2: when a todo was marked done, so the dashboard keeps today's */
     "ALTER TABLE todos ADD COLUMN done_at TEXT;"
     "UPDATE todos SET done_at = updated_at WHERE status = 'done';",
+    /* 3: sync with the 7asyncd server (see SYNC_TRIGGERS); updated_at
+     * is UTC "YYYY-MM-DD HH:MM:SS" like todos.updated_at */
+    "ALTER TABLE todos ADD COLUMN uuid TEXT;"
+    "ALTER TABLE calendar_entries ADD COLUMN uuid TEXT;"
+    "ALTER TABLE calendar_entries ADD COLUMN updated_at TEXT;"
+    "UPDATE todos SET uuid = " UUID_SQL ";"
+    "UPDATE calendar_entries SET uuid = " UUID_SQL ","
+    " updated_at = COALESCE(created_at, datetime('now'));"
+    "CREATE UNIQUE INDEX todos_uuid ON todos(uuid);"
+    "CREATE UNIQUE INDEX calendar_entries_uuid ON calendar_entries(uuid);"
+    "CREATE TABLE deleted_items ("
+    " uuid       TEXT PRIMARY KEY,"
+    " kind       TEXT NOT NULL CHECK(kind IN ('todo','entry')),"
+    " deleted_at TEXT NOT NULL"
+    ");"
+    SYNC_TRIGGERS("todos", "todo")
+    SYNC_TRIGGERS("calendar_entries", "entry"),
 };
 
 int
@@ -128,6 +173,78 @@ exec_done(sqlite3_stmt *s)
 /* Import                                                              */
 /* ------------------------------------------------------------------ */
 
+/* poc.db: the same tables, without times, links and sync columns */
+static const char import_poc_sql[] =
+    "BEGIN;"
+    "INSERT INTO todos"
+    " (title, description, priority, status, created_at, updated_at, done_at)"
+    " SELECT title, description, COALESCE(priority, 2),"
+    "        COALESCE(status, 'open'), created_at, updated_at,"
+    "        CASE WHEN status = 'done' THEN updated_at END"
+    " FROM src.todos ORDER BY id;"
+    "INSERT INTO calendar_entries"
+    " (title, description, entry_date, recurrence_type,"
+    "  recurrence_weekday, recurrence_day, recurrence_month, created_at)"
+    " SELECT title, description, entry_date, recurrence_type,"
+    "        recurrence_weekday, recurrence_day, recurrence_month, created_at"
+    " FROM src.calendar_entries ORDER BY id;"
+        "COMMIT;";
+
+/* tasks.db of 7atodo / 7acal: one items table.  An item with a due date
+ * becomes a calendar entry, one without a todo; the first line of the
+ * body is the title, the rest (after a "---" line from an .ics import)
+ * the description.  Items keep their uuid, so the same item imported on
+ * two machines stays one record for 7async; deleted items become
+ * deleted_items.  The alarm flag was never used and is dropped. */
+#define TASK_TITLE \
+    "COALESCE(NULLIF(trim(CASE WHEN instr(body, char(10)) > 0" \
+    " THEN substr(body, 1, instr(body, char(10)) - 1) ELSE body END), ''), '(untitled)')"
+#define TASK_REST \
+    "CASE WHEN instr(body, char(10)) > 0 THEN substr(body, instr(body, char(10)) + 1) END"
+#define TASK_DESCRIPTION \
+    "NULLIF(trim(CASE WHEN " TASK_REST " LIKE '---' || char(10) || '%'" \
+    " THEN substr(" TASK_REST ", 5) ELSE " TASK_REST " END, ' ' || char(10)), '')"
+
+static const char import_tasks_sql[] =
+    "BEGIN;"
+    "INSERT INTO todos (title, description, priority, created_at, updated_at, uuid)"
+    " SELECT " TASK_TITLE ", " TASK_DESCRIPTION ","
+    "        MIN(MAX(COALESCE(priority, 2), 1), 3),"
+    "        datetime(created_at, 'unixepoch'),"
+    "        datetime(COALESCE(updated_at, created_at), 'unixepoch'), uuid"
+    " FROM src.items WHERE deleted = 0 AND due_date IS NULL ORDER BY id;"
+    "INSERT INTO calendar_entries"
+    " (title, description, entry_date, entry_time, created_at, updated_at, uuid)"
+    " SELECT " TASK_TITLE ", " TASK_DESCRIPTION ", due_date,"
+    "        CASE WHEN due_time GLOB '[0-2][0-9]:[0-5][0-9]' THEN due_time END,"
+    "        datetime(created_at, 'unixepoch'),"
+    "        datetime(COALESCE(updated_at, created_at), 'unixepoch'), uuid"
+    " FROM src.items WHERE deleted = 0 AND due_date IS NOT NULL ORDER BY id;"
+    "INSERT OR IGNORE INTO deleted_items (uuid, kind, deleted_at)"
+    " SELECT uuid, CASE WHEN due_date IS NULL THEN 'todo' ELSE 'entry' END,"
+    "        datetime(COALESCE(updated_at, created_at), 'unixepoch')"
+    " FROM src.items WHERE deleted = 1 AND uuid IS NOT NULL;"
+    "COMMIT;";
+
+/* 1 when the attached database `schema` has the table */
+static int
+db_table_exists_in(sqlite3 *db, const char *schema, const char *table)
+{
+    sqlite3_stmt *s;
+    char sql[128];
+    int  found = 0;
+
+    snprintf(sql, sizeof(sql),
+             "SELECT 1 FROM %s.sqlite_master WHERE type = 'table' AND name = ?1;",
+             schema);
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(s, 1, table, -1, SQLITE_STATIC);
+        found = sqlite3_step(s) == SQLITE_ROW;
+    }
+    sqlite3_finalize(s);
+    return found;
+}
+
 int
 store_import(sqlite3 *db, const char *path)
 {
@@ -150,21 +267,9 @@ store_import(sqlite3 *db, const char *path)
         return -1;
     }
 
-    rc = sqlite3_exec(db,
-        "BEGIN;"
-        "INSERT INTO todos"
-        " (title, description, priority, status, created_at, updated_at, done_at)"
-        " SELECT title, description, COALESCE(priority, 2),"
-        "        COALESCE(status, 'open'), created_at, updated_at,"
-        "        CASE WHEN status = 'done' THEN updated_at END"
-        " FROM src.todos ORDER BY id;"
-        "INSERT INTO calendar_entries"
-        " (title, description, entry_date, recurrence_type,"
-        "  recurrence_weekday, recurrence_day, recurrence_month, created_at)"
-        " SELECT title, description, entry_date, recurrence_type,"
-        "        recurrence_weekday, recurrence_day, recurrence_month, created_at"
-        " FROM src.calendar_entries ORDER BY id;"
-        "COMMIT;", NULL, NULL, NULL);
+    rc = sqlite3_exec(db, db_table_exists_in(db, "src", "items") ? import_tasks_sql
+                                                                : import_poc_sql,
+                      NULL, NULL, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "import: %s\n", sqlite3_errmsg(db));
         sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);

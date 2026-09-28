@@ -5,7 +5,9 @@
 
 #include <locale.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "date.h"
 #include "quickadd.h"
@@ -97,7 +99,7 @@ test_schema(sqlite3 *db)
 {
     CHECK(store_init(db) == 0);
     CHECK(store_init(db) == 0);                    /* idempotent */
-    CHECK(count_rows(db, "PRAGMA user_version;") == 2);
+    CHECK(count_rows(db, "PRAGMA user_version;") == 3);
 
     /* Both a date and a recurrence, or neither */
     CHECK(sqlite3_exec(db,
@@ -138,6 +140,131 @@ test_import(sqlite3 *db, const char *poc)
     CHECK(strcmp(buf, "03-15 Birthday - Anna; 03-15 Standup") == 0);
     agenda(db, "2026-11-22", "2026-11-22", buf, sizeof(buf));
     CHECK(strcmp(buf, "11-22 Birthday - Piotr") == 0);
+}
+
+/* Text of the first column of the first row, "" when none */
+static const char *
+first_text(sqlite3 *db, const char *sql, char *buf, size_t bufsz)
+{
+    sqlite3_stmt *s;
+    buf[0] = '\0';
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK &&
+        sqlite3_step(s) == SQLITE_ROW && sqlite3_column_text(s, 0))
+        snprintf(buf, bufsz, "%s", (const char *)sqlite3_column_text(s, 0));
+    sqlite3_finalize(s);
+    return buf;
+}
+
+/* uuid, updated_at and deleted_items kept by the triggers */
+static void
+test_sync_columns(void)
+{
+    sqlite3 *db;
+    char buf[100];
+    sqlite3_int64 t;
+
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { g_fail++; return; }
+    sqlite3_exec(db, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
+    CHECK(store_init(db) == 0);
+
+    /* New rows get a version 4 uuid and an updated_at */
+    t = store_add_todo(db, "sync me", NULL, 2);
+    CHECK(strlen(first_text(db, "SELECT uuid FROM todos;", buf, sizeof(buf))) == 36 &&
+          buf[14] == '4' && strchr("89ab", buf[19]));
+    CHECK(sqlite3_exec(db,
+        "INSERT INTO calendar_entries (title, entry_date) VALUES ('e', '2026-10-01');"
+        "INSERT INTO calendar_entries (title, entry_date) VALUES ('f', '2026-10-02');",
+        NULL, NULL, NULL) == SQLITE_OK);
+    CHECK(count_rows(db, "SELECT COUNT(DISTINCT uuid) FROM calendar_entries"
+                         " WHERE updated_at IS NOT NULL;") == 2);
+
+    /* A change bumps updated_at unless the writer sets it */
+    sqlite3_exec(db, "UPDATE calendar_entries SET updated_at = '2000-01-01 00:00:00';"
+                     "UPDATE calendar_entries SET title = 'g' WHERE title = 'f';",
+                 NULL, NULL, NULL);
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM calendar_entries"
+                         " WHERE updated_at > '2020';") == 1);
+    sqlite3_exec(db, "UPDATE calendar_entries SET title = 'h',"
+                     " updated_at = '2001-01-01 00:00:00' WHERE title = 'g';",
+                 NULL, NULL, NULL);
+    CHECK(strcmp(first_text(db, "SELECT updated_at FROM calendar_entries"
+                                " WHERE title = 'h';", buf, sizeof(buf)),
+                 "2001-01-01 00:00:00") == 0);
+
+    /* A row inserted with its uuid and time (from the server) keeps them */
+    sqlite3_exec(db, "INSERT INTO todos (title, uuid, updated_at)"
+                     " VALUES ('remote', 'u-1', '2002-02-02 00:00:00');",
+                 NULL, NULL, NULL);
+    CHECK(strcmp(first_text(db, "SELECT updated_at FROM todos WHERE uuid = 'u-1';",
+                            buf, sizeof(buf)), "2002-02-02 00:00:00") == 0);
+
+    /* Deleting leaves the uuid behind, also for the unlinked entry */
+    sqlite3_exec(db, "UPDATE calendar_entries SET todo_id = 1 WHERE title = 'e';"
+                     "UPDATE calendar_entries SET updated_at = '2000-01-01 00:00:00';",
+                 NULL, NULL, NULL);
+    CHECK(store_delete_todo(db, t) == 0);
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM deleted_items WHERE kind = 'todo';") == 1);
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM calendar_entries"
+                         " WHERE title = 'e' AND todo_id IS NULL"
+                         " AND updated_at > '2020';") == 1);
+    sqlite3_exec(db, "DELETE FROM calendar_entries;", NULL, NULL, NULL);
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM deleted_items WHERE kind = 'entry';") == 2);
+    sqlite3_close(db);
+}
+
+/* tasks.db of 7atodo / 7acal */
+static void
+test_import_tasks(void)
+{
+    sqlite3 *db, *src;
+    char path[] = "/tmp/test_store_tasksXXXXXX";
+    char buf[200];
+    int fd = mkstemp(path);
+
+    if (fd < 0) { g_fail++; return; }
+    close(fd);
+    if (sqlite3_open(path, &src) != SQLITE_OK) { g_fail++; return; }
+    CHECK(sqlite3_exec(src,
+        "CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " priority INTEGER NOT NULL DEFAULT 2, due_date TEXT,"
+        " body TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,"
+        " alarm BOOLEAN NOT NULL DEFAULT 0, uuid TEXT, updated_at INTEGER,"
+        " deleted INTEGER NOT NULL DEFAULT 0, due_time TEXT);"
+        "INSERT INTO items (priority, due_date, body, created_at, updated_at, uuid, due_time)"
+        " VALUES (1, NULL, 'Kupić mleko' || char(10) || 'i chleb' || char(10), 0, 60,"
+        "         'aaaaaaaa-0000-4000-8000-000000000001', NULL),"
+        "        (2, '2026-10-07', 'Urodziny' || char(10) || '---' || char(10) || 'tort',"
+        "         0, 60, NULL, '15:30'),"
+        "        (2, '2026-10-08', '  ', 0, NULL, NULL, 'bad'),"
+        "        (2, NULL, 'gone', 0, 90, 'aaaaaaaa-0000-4000-8000-000000000002', NULL);"
+        "UPDATE items SET deleted = 1 WHERE body = 'gone';",
+        NULL, NULL, NULL) == SQLITE_OK);
+    sqlite3_close(src);
+
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { g_fail++; unlink(path); return; }
+    CHECK(store_init(db) == 0);
+    CHECK(store_import(db, path) == 0);
+    unlink(path);
+
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM todos;") == 1);
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM todos WHERE title = 'Kupić mleko'"
+                         " AND description = 'i chleb' AND priority = 1"
+                         " AND status = 'open'"
+                         " AND uuid = 'aaaaaaaa-0000-4000-8000-000000000001'"
+                         " AND updated_at = '1970-01-01 00:01:00';") == 1);
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM calendar_entries;") == 2);
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM calendar_entries"
+                         " WHERE title = 'Urodziny' AND description = 'tort'"
+                         " AND entry_date = '2026-10-07' AND entry_time = '15:30'"
+                         " AND length(uuid) = 36;") == 1);
+    CHECK(strcmp(first_text(db, "SELECT title || '|' || COALESCE(entry_time, '-')"
+                                " || '|' || updated_at FROM calendar_entries"
+                                " WHERE entry_date = '2026-10-08';", buf, sizeof(buf)),
+                 "(untitled)|-|1970-01-01 00:00:00") == 0);
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM deleted_items WHERE kind = 'todo'"
+                         " AND uuid = 'aaaaaaaa-0000-4000-8000-000000000002'"
+                         " AND deleted_at = '1970-01-01 00:01:30';") == 1);
+    sqlite3_close(db);
 }
 
 static void
@@ -409,6 +536,8 @@ main(int argc, char **argv)
     test_import(db, argv[1]);
     test_recurrence(db);
     test_todos(db);
+    test_sync_columns();
+    test_import_tasks();
     test_quickadd(utf8_locale);
 
     sqlite3_close(db);

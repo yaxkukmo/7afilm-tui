@@ -5,7 +5,7 @@ aplikacji, obsługiwany z klawiatury.  Baza: `~/.7a/organizer.db`.
 
 ```
 7aorganizer-tui                  uruchomienie
-7aorganizer-tui --import FILE    import z bazy w układzie poc.db (pusta baza docelowa)
+7aorganizer-tui --import FILE    import z poc.db albo tasks.db z 7atodo/7acal (pusta baza docelowa)
 ```
 
 Pełny opis klawiszy jest w nagłówku `organizer/7aorganizer-tui.c`, a pozostała
@@ -105,6 +105,15 @@ układ z poc.db, żeby import szedł bez przeróbek.
   `recurrence_weekday` / `recurrence_day` / `recurrence_month`;
   `entry_time`, `duration_min`, `todo_id` (zadanie, z którego wpis
   zaplanowano; usunięcie zadania zostawia wpis bez powiązania)
+- synchronizacja (migracja 3): obie tabele mają `uuid` i `updated_at`,
+  a usunięte elementy zostawiają `uuid` w `deleted_items`.  Pilnują tego
+  triggery w bazie, więc tak samo zachowują się zapisy z 7atodo i 7acal
+  (repo 7adesktop), które korzystają z tej bazy.  `7async` wysyła zmiany
+  na serwer i pobiera cudze.
+
+Z `tasks.db` (7atodo/7acal): wpis z datą → wpis w kalendarzu (z godziną),
+bez daty → zadanie; pierwsza linia treści to tytuł, reszta opis; `uuid`
+zostaje ten sam, więc import na drugiej maszynie nie dubluje rekordów.
 
 Testy warstwy danych: `make check` (`organizer/test_store.c`, dane
 w `organizer/testdata/poc.db`).

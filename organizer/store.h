@@ -80,7 +80,8 @@ typedef struct {
 int  store_init(sqlite3 *db);
 
 /* Copy todos and calendar entries from a database with the poc.db
- * schema (no times, no todo links).  Returns 0, -1 on error. */
+ * schema (no times, no todo links), or items from the tasks.db of
+ * 7atodo / 7acal (see import_tasks_sql).  Returns 0, -1 on error. */
 int  store_import(sqlite3 *db, const char *path);
 /* 1 when there are no todos and no calendar entries */
 int  store_is_empty(sqlite3 *db);
