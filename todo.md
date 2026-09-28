@@ -32,7 +32,7 @@
 ## Repozytorium
 
 - [ ] Przemianować repo i katalog (np. `7a-tui`), bo mieści dwie aplikacje
-- [ ] `todo-organizer.md`: zaktualizować do tego, co powstało (schemat bazy,
+- [x] `todo-organizer.md`: zaktualizować do tego, co powstało (schemat bazy,
       zakładki F1–F3, klawisze, formularz, quick add `a`) albo usunąć
-- [ ] `poc.db` w katalogu głównym: kopia jest w `organizer/testdata/`, oryginał
+- [x] `poc.db` w katalogu głównym: kopia jest w `organizer/testdata/`, oryginał
       można usunąć
