@@ -22,7 +22,7 @@
  *                  text without a date or time becomes a todo (see quickadd.h)
  *   /              search todos and entries by title or date and jump there
  *   [ / ]          scroll a long description in the viewer (Shift+Up/Down too)
- *   D / C / T      Dashboard / Calendar (week) / Todo list
+ *   F1 / F2 / F3   Dashboard / Calendar (week) / Todo list tabs
  *   Calendar:      Left / Right day (h / l), PgUp / PgDn week, Home today
  *   Todo list:     f cycles the filter open -> done -> all
  *   q / Ctrl+Q     quit
@@ -42,6 +42,7 @@
 #include "edit.h"
 #include "inputline.h"
 #include "listpopup.h"
+#include "tabbar.h"
 #include "quickadd.h"
 #include "store.h"
 #include "tui.h"
@@ -49,10 +50,13 @@
 
 #define PROG "7aorganizer-tui"
 
+/* Views are the tabs, in tab order */
 #define VIEW_DASHBOARD 0
-#define VIEW_TODO      1
-#define VIEW_CALENDAR  2
+#define VIEW_CALENDAR  1
+#define VIEW_TODO      2
 #define VIEW_COUNT     3
+
+#define BODY_TOP       3   /* below the tab bar */
 
 #define ROW_HEADER 0   /* group title                                  */
 #define ROW_EMPTY  1   /* placeholder / spacer, not selectable         */
@@ -82,7 +86,9 @@ static const char *const weekday_long[8] = {
     "", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
     "Saturday", "Sunday"
 };
-static const char *const view_names[VIEW_COUNT] = { "Dashboard", "Todo", "Calendar" };
+static const char *const tab_names[VIEW_COUNT] = {
+    "F1:Dashboard", "F2:Calendar", "F3:Todo"
+};
 static const char *const filter_names[3]        = { "all", "open", "done" };
 static const char *const priority_names[4]      = { "", "high", "normal", "low" };
 
@@ -1053,11 +1059,18 @@ draw_viewer(int top, int x, int w, int h)
 /* Drawing: frame                                                      */
 /* ------------------------------------------------------------------ */
 
+/* Rows between the tab bar and the status bar */
+static int
+body_height(void)
+{
+    return getmaxy(stdscr) - BODY_TOP - 3;
+}
+
 static void
 draw_title(int col, const char *title)
 {
     attron(COLOR_PAIR(CP_BOX_LINE) | A_BOLD);
-    mvprintw(0, col, " %s ", title);
+    mvprintw(BODY_TOP - 1, col, " %s ", title);
     attroff(COLOR_PAIR(CP_BOX_LINE) | A_BOLD);
 }
 
@@ -1067,15 +1080,15 @@ help_text(void)
 {
     if (selected_todo())
         return "Enter edit  Space done  s schedule  x delete  n new  / search"
-               "  Tab section  D C T views  q quit";
+               "  Tab section  F1-F3 tabs  q quit";
     if (selected_occ())
         return g_view == VIEW_CALENDAR
             ? "Enter edit  x delete  arrows day/item  PgUp/PgDn week  Home today"
-              "  n new  / search  D C T views  q quit"
-            : "Enter edit  x delete  n new  / search  Tab section  D C T views  q quit";
+              "  n new  / search  F1-F3 tabs  q quit"
+            : "Enter edit  x delete  n new  / search  Tab section  F1-F3 tabs  q quit";
     return g_view == VIEW_CALENDAR
-        ? "arrows day/item  PgUp/PgDn week  Home today  n new  / search  D C T views  q quit"
-        : "n new  / search  D C T views  q quit";
+        ? "arrows day/item  PgUp/PgDn week  Home today  n new  / search  F1-F3 tabs  q quit"
+        : "n new  / search  F1-F3 tabs  q quit";
 }
 
 static void
@@ -1084,30 +1097,29 @@ draw_all(void)
     int rows  = getmaxy(stdscr);
     int cols  = getmaxx(stdscr);
     int split = viewer_split();
-    int body_h = rows - 4;
+    int body_h = body_height();
     int right  = split ? split : cols - 1;   /* list's right border */
-    char title[64];
+    char info[64];
     int r;
 
     erase();
-    if (rows < 8 || cols < 30) {
+    if (rows < BODY_TOP + 6 || cols < 40) {
         mvprintw(0, 0, "Terminal too small");
         refresh();
         return;
     }
 
-    /* Background and frame */
+    /* Background, tab bar and frame */
     attron(COLOR_PAIR(CP_BOX));
-    for (r = 1; r < rows - 1; r++)
+    for (r = BODY_TOP; r < rows - 1; r++)
         mvhline(r, 1, ' ', cols - 2);
     attroff(COLOR_PAIR(CP_BOX));
 
+    tabbar_draw(0, cols, tab_names, VIEW_COUNT, g_view);
+
     attron(COLOR_PAIR(CP_BOX_LINE));
-    mvaddch(0, 0, g_ul);
-    mvhline(0, 1, g_hl, cols - 2);
-    mvaddch(0, cols - 1, g_ur);
-    mvvline(1, 0, g_vl, rows - 2);
-    mvvline(1, cols - 1, g_vl, rows - 2);
+    mvvline(BODY_TOP, 0, g_vl, rows - BODY_TOP - 1);
+    mvvline(BODY_TOP, cols - 1, g_vl, rows - BODY_TOP - 1);
     mvaddch(rows - 3, 0, g_lt);
     mvhline(rows - 3, 1, g_hl, cols - 2);
     mvaddch(rows - 3, cols - 1, g_rt);
@@ -1115,33 +1127,41 @@ draw_all(void)
     mvhline(rows - 1, 1, g_hl, cols - 2);
     mvaddch(rows - 1, cols - 1, g_lr);
     if (split) {
-        mvaddch(0, split, g_tt);
-        mvvline(1, split, g_vl, body_h);
+        mvaddch(BODY_TOP - 1, split, g_tt);
+        mvvline(BODY_TOP, split, g_vl, body_h);
         mvaddch(rows - 3, split, g_bt);
     }
     attroff(COLOR_PAIR(CP_BOX_LINE));
 
-    /* Panes */
+    /* What the tab shows, at the right end of the tab row */
+    info[0] = '\0';
     if (g_view == VIEW_TODO) {
-        snprintf(title, sizeof(title), "Todo: %s", filter_names[g_todo_filter]);
+        snprintf(info, sizeof(info), "filter: %s (f) ", filter_names[g_todo_filter]);
     } else if (g_view == VIEW_CALENDAR) {
         Day ws = week_start(g_cal_day);
         int y1, m1, d1, y2, m2, d2;
         day_to_ymd(ws, &y1, &m1, &d1);
         day_to_ymd(ws + 6, &y2, &m2, &d2);
-        snprintf(title, sizeof(title), "Calendar: %02d.%02d - %02d.%02d.%04d",
+        snprintf(info, sizeof(info), "week %02d.%02d - %02d.%02d.%04d ",
                  d1, m1, d2, m2, y2);
-    } else {
-        snprintf(title, sizeof(title), "%s", view_names[g_view]);
     }
-    draw_title(2, title);
+    if (info[0]) {
+        int iw = utf8_width(info);
+        if (cols - 1 - iw > tabbar_end(tab_names, VIEW_COUNT)) {
+            attron(COLOR_PAIR(CP_BOX) | A_DIM);
+            mvprintw(1, cols - 1 - iw, "%s", info);
+            attroff(COLOR_PAIR(CP_BOX) | A_DIM);
+        }
+    }
+
+    /* Panes */
     if (g_view == VIEW_CALENDAR)
-        draw_calendar(1, 1, right - 1, body_h);
+        draw_calendar(BODY_TOP, 1, right - 1, body_h);
     else
-        draw_list(1, 1, right - 1, body_h);
+        draw_list(BODY_TOP, 1, right - 1, body_h);
     if (split) {
         draw_title(split + 2, "Viewer");
-        draw_viewer(1, split + 2, cols - split - 4, body_h);
+        draw_viewer(BODY_TOP, split + 2, cols - split - 4, body_h);
     }
 
     /* Status or key help */
@@ -1183,7 +1203,7 @@ draw_all(void)
 static void
 handle_key(int ch)
 {
-    int page = getmaxy(stdscr) - 5;
+    int page = body_height() - 1;
     if (page < 1) page = 1;
 
     switch (listpopup_key(&g_search, ch)) {
@@ -1257,14 +1277,14 @@ handle_key(int ch)
     case 'q' & 0x1f:
         g_want_quit = 1;
         return;
-    case 'D': case 'd':
+    case KEY_F(1):
         switch_view(VIEW_DASHBOARD);
         return;
-    case 'T': case 't':
-        switch_view(VIEW_TODO);
-        return;
-    case 'C': case 'c':
+    case KEY_F(2):
         switch_view(VIEW_CALENDAR);
+        return;
+    case KEY_F(3):
+        switch_view(VIEW_TODO);
         return;
     case '\n': case '\r': case KEY_ENTER:
         start_edit();
@@ -1277,7 +1297,7 @@ handle_key(int ch)
         return;
     case '[': case KEY_SR:
     case ']': case KEY_SF: {
-        int max = g_viewer_lines - (getmaxy(stdscr) - 4);
+        int max = g_viewer_lines - body_height();
         g_viewer_scroll += (ch == '[' || ch == KEY_SR) ? -3 : 3;
         if (g_viewer_scroll > max) g_viewer_scroll = max;
         if (g_viewer_scroll < 0)   g_viewer_scroll = 0;

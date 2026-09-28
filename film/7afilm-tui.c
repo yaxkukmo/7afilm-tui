@@ -34,6 +34,7 @@
 #include "dynlist.h"
 #include "form.h"
 #include "listpopup.h"
+#include "tabbar.h"
 #include "timer.h"
 #include "tui.h"
 
@@ -100,9 +101,6 @@ static char       g_temp_buf[8]   = "20";  /* runtime temperature — not stored
 static int        g_tab     = TAB_TIMER;
 static int        g_want_quit = 0;
 
-/* Tab button positions — used to draw the gap in the top box bottom border */
-static int        g_tab_btn_col[TAB_COUNT];
-static int        g_tab_btn_width[TAB_COUNT];
 
 static int g_film_idx     = 0;
 static int g_iso_nom_idx  = 8;   /* 400 */
@@ -718,94 +716,7 @@ AutoUpdatePresetName(void)
 /* Top button box                                                      */
 /* ------------------------------------------------------------------ */
 
-static const char *tab_names[TAB_COUNT] = { "F1:Timer", "F2:Db", "F3:Calc", "F4:Cfg", "F11:Help", "F12:Quit" };
-
-/* Visual-only redraw of the tab buttons row (no field registration) */
-static void
-draw_tab_chrome(int row, int cols)
-{
-    int t, col = INDENT;
-
-    /* Left border + interior fill */
-    attron(COLOR_PAIR(CP_BOX_LINE));
-    mvaddch(row, 0, g_vl);
-    attroff(COLOR_PAIR(CP_BOX_LINE));
-    attron(COLOR_PAIR(CP_BOX));
-    mvhline(row, 1, ' ', cols - 2);
-    attroff(COLOR_PAIR(CP_BOX));
-
-    /* Tab buttons */
-    for (t = 0; t < TAB_COUNT; t++) {
-        int active = (t == g_tab);
-        int w      = (int)strlen(tab_names[t]) + 2;
-
-        g_tab_btn_col[t]   = col;
-        g_tab_btn_width[t] = w;
-
-        if (active) {
-            attron(COLOR_PAIR(CP_BOX_LINE));
-            mvaddch(row, col,         g_vl);
-            mvaddch(row, col + w - 1, g_vl);
-            attroff(COLOR_PAIR(CP_BOX_LINE));
-            attron(A_BOLD | COLOR_PAIR(CP_BOX) | (g_basic_colors ? A_REVERSE : 0));
-            mvprintw(row, col + 1, "%s", tab_names[t]);
-            attroff(A_BOLD | COLOR_PAIR(CP_BOX) | A_REVERSE);
-            attron(COLOR_PAIR(CP_BOX_LINE));
-            mvaddch(row - 1, col,         g_tt);
-            mvaddch(row - 1, col + w - 1, g_tt);
-            attroff(COLOR_PAIR(CP_BOX_LINE));
-        } else {
-            attron(COLOR_PAIR(CP_BOX));
-            mvprintw(row, col, " %s ", tab_names[t]);
-            attroff(COLOR_PAIR(CP_BOX));
-        }
-
-        col += (int)strlen(tab_names[t]) + 3;
-    }
-
-    attron(COLOR_PAIR(CP_BOX_LINE));
-    mvaddch(row, cols - 1, g_vl);
-    attroff(COLOR_PAIR(CP_BOX_LINE));
-}
-
-static void
-draw_tab_box_buttons(int row, int cols)
-{
-    /* Register FT_TABS as field 0 — must come first */
-    field_reg(FT_TABS, NULL, 0, 0, NULL, NULL, row, INDENT, cols - INDENT - 1);
-    draw_tab_chrome(row, cols);
-}
-
-static void
-draw_tab_box_bottom(int row, int cols)
-{
-    int i;
-    int gap_s = g_tab_btn_col[g_tab];               /* inclusive gap start */
-    int gap_e = gap_s + g_tab_btn_width[g_tab] - 1; /* inclusive gap end   */
-
-    attron(COLOR_PAIR(CP_BOX_LINE));
-    mvaddch(row, 0, g_lt);
-
-    for (i = 1; i < cols - 1; i++) {
-        if (i == gap_s) {
-            mvaddch(row, i, g_lr);
-        } else if (i > gap_s && i < gap_e) {
-            /* Open gap — keep box interior color */
-            attroff(COLOR_PAIR(CP_BOX_LINE));
-            attron(COLOR_PAIR(CP_BOX));
-            mvaddch(row, i, ' ');
-            attroff(COLOR_PAIR(CP_BOX));
-            attron(COLOR_PAIR(CP_BOX_LINE));
-        } else if (i == gap_e) {
-            mvaddch(row, i, g_ll);
-        } else {
-            mvaddch(row, i, g_hl);
-        }
-    }
-
-    mvaddch(row, cols - 1, g_rt);
-    attroff(COLOR_PAIR(CP_BOX_LINE));
-}
+static const char *const tab_names[TAB_COUNT] = { "F1:Timer", "F2:Db", "F3:Calc", "F4:Cfg", "F11:Help", "F12:Quit" };
 
 /* ------------------------------------------------------------------ */
 /* Database tab                                                        */
@@ -1528,9 +1439,10 @@ draw_all(void)
     erase();
 
     /* ---- Top (button) box: 3 rows ---- */
-    draw_box_top_plain(row, 0, cols);   row++;   /* ┌──...──┐          */
-    draw_tab_box_buttons(row, cols);    row++;   /* │ tabs  Quit │     */
-    draw_tab_box_bottom(row, cols);     row++;   /* └──[gap]──...──┘   */
+    /* Register FT_TABS as field 0 — must come first */
+    field_reg(FT_TABS, NULL, 0, 0, NULL, NULL, 1, INDENT, cols - INDENT - 1);
+    tabbar_draw(0, cols, tab_names, TAB_COUNT, g_tab);
+    row = 3;
 
     /* ---- Main content area: borders + fill ---- */
     attron(COLOR_PAIR(CP_BOX_LINE));
@@ -1578,9 +1490,7 @@ draw_all(void)
     }
 
     /* ---- Redraw top chrome to cover any content that leaked upward ---- */
-    draw_box_top_plain(0, 0, cols);
-    draw_tab_chrome(1, cols);
-    draw_tab_box_bottom(2, cols);
+    tabbar_draw(0, cols, tab_names, TAB_COUNT, g_tab);
 
     /* ---- Separator: content bottom / status top ---- */
     draw_h_separator(rows - 3, 0, cols);   /* ├──...──┤ */

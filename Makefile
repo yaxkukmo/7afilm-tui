@@ -13,7 +13,7 @@ LDFLAGS = $(SQLITE_LIBS) $(CURSES_LIBS) -lm
 # Code shared by the 7a TUI apps
 LIB     = lib/lib7a.a
 LIBOBJS = lib/utf8.o lib/tui.o lib/form.o lib/listpopup.o lib/db.o \
-          lib/dynlist.o lib/inputline.o
+          lib/dynlist.o lib/inputline.o lib/tabbar.o
 
 FILMOBJS = film/timer.o film/7afilm-tui.o
 
@@ -53,6 +53,9 @@ lib/dynlist.o: lib/dynlist.c lib/dynlist.h
 lib/inputline.o: lib/inputline.c lib/inputline.h lib/form.h lib/tui.h lib/utf8.h
 	$(CC) $(CFLAGS) -c lib/inputline.c -o $@
 
+lib/tabbar.o: lib/tabbar.c lib/tabbar.h lib/tui.h lib/utf8.h
+	$(CC) $(CFLAGS) -c lib/tabbar.c -o $@
+
 # organizer/
 
 organizer/date.o: organizer/date.c organizer/date.h
@@ -70,7 +73,7 @@ organizer/edit.o: organizer/edit.c organizer/edit.h organizer/date.h organizer/q
 
 organizer/7aorganizer-tui.o: organizer/7aorganizer-tui.c organizer/date.h organizer/edit.h \
                             organizer/quickadd.h organizer/store.h lib/inputline.h \
-                            lib/listpopup.h \
+                            lib/listpopup.h lib/tabbar.h \
                             lib/db.h lib/tui.h lib/utf8.h
 	$(CC) $(CFLAGS) -c organizer/7aorganizer-tui.c -o $@
 
@@ -86,7 +89,7 @@ film/timer.o: film/timer.c film/timer.h lib/tui.h
 	$(CC) $(CFLAGS) -c film/timer.c -o $@
 
 film/7afilm-tui.o: film/7afilm-tui.c film/timer.h lib/db.h lib/dynlist.h \
-                   lib/form.h lib/listpopup.h lib/tui.h
+                   lib/form.h lib/listpopup.h lib/tabbar.h lib/tui.h
 	$(CC) $(CFLAGS) -c film/7afilm-tui.c -o $@
 
 clean:
