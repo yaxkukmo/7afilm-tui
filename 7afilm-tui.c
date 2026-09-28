@@ -4,13 +4,17 @@
  * Same database (~/.7a/film.db) as the desktop version.
  *
  * Tab bar (top):  [ Timer ]  [ Database ]  [ Calc ]  [ Config ]
- *   Left/Right or 1/2/3/4 to switch tabs
+ *   F1-F4/F11/F12 or 1/2/3/4 to switch tabs (focus goes to the first field),
+ *   Left/Right when the tab bar is focused
  *
  * Navigation within a tab:
  *   Tab / Shift+Tab  - next / previous field
- *   Up / Down        - spinner +/-1 (HH:MM:SS) or list navigation
+ *   Left / Right     - previous / next field
+ *   Up / Down        - field above / below; spinner +/-1 (HH:MM:SS),
+ *                      list navigation or dropdown on those fields
  *   Enter / Space    - activate button or load selected preset
  *   d                - delete selected item (list focused)
+ *   Esc              - close popup / dropdown; otherwise focus the tab bar
  *   q / Q            - quit
  */
 
@@ -180,6 +184,7 @@ static char       g_temp_buf[8]   = "20";  /* runtime temperature — not stored
 static Field      g_fields[MAX_FIELDS];
 static int        g_nfields = 0;
 static int        g_focus   = 0;
+static int        g_focus_stale = 0; /* g_fields still holds the previous tab */
 
 static int        g_tab     = TAB_TIMER;
 static int        g_want_quit = 0;
@@ -2113,6 +2118,8 @@ draw_help_tab(int row)
     mvprintw(r++, INDENT, "  F12          Switch to Quit tab");
     mvprintw(r++, INDENT, "  Tab          Focus next field");
     mvprintw(r++, INDENT, "  Shift+Tab    Focus previous field");
+    mvprintw(r++, INDENT, "  Left/Right   Focus previous / next field");
+    mvprintw(r++, INDENT, "  Up/Down      Focus field above / below");
     attroff(COLOR_PAIR(CP_BOX));
     r++;
 
@@ -2205,7 +2212,7 @@ draw_all(void)
     if (visible_h < 1) visible_h = 1;
 
     /* Auto-scroll: bring focused field into view using previous frame's positions */
-    if (g_nfields > 0 && g_focus > 0 && g_focus < g_nfields) {
+    if (!g_focus_stale && g_nfields > 0 && g_focus > 0 && g_focus < g_nfields) {
         Field *f = &g_fields[g_focus];
         if (f->row < content_top)
             g_content_scroll[g_tab] += (f->row - content_top);
@@ -2291,6 +2298,9 @@ draw_all(void)
     /* ---- Status box bottom border ---- */
     draw_box_bottom(rows - 1, 0, cols);              /* └──...──┘ */
 
+    g_focus_stale = 0;
+    if (g_focus >= g_nfields) g_focus = g_nfields - 1;
+
     /* ---- Cursor on focused text field ---- */
     if (g_focus >= 0 && g_focus < g_nfields) {
         Field *f = &g_fields[g_focus];
@@ -2345,6 +2355,46 @@ confirm_popup(void)
     g_popup_open = 0;
     g_popup_dm   = NULL;
     if (dm->on_confirm) dm->on_confirm(g_popup_sel);
+}
+
+/* Switch tab and put focus on its first content field (field 0 is the tab bar) */
+static void
+switch_tab(int tab)
+{
+    g_tab         = tab;
+    g_focus       = 1;
+    g_focus_stale = 1;
+}
+
+/* Focus the nearest field in the row above (dir < 0) or below (dir > 0).
+ * Returns 0 when there is no field in that direction. */
+static int
+focus_vertical(int dir)
+{
+    Field *cur = &g_fields[g_focus];
+    int cx     = cur->col + cur->width / 2;
+    int best   = -1, best_row = 0, best_dx = 0;
+    int i;
+
+    for (i = 0; i < g_nfields; i++) {
+        Field *f = &g_fields[i];
+        int dx;
+        if (dir < 0 ? f->row >= cur->row : f->row <= cur->row)
+            continue;
+        dx = f->col + f->width / 2 - cx;
+        if (dx < 0) dx = -dx;
+        if (best < 0 ||
+            (dir < 0 ? f->row > best_row : f->row < best_row) ||
+            (f->row == best_row && dx < best_dx)) {
+            best     = i;
+            best_row = f->row;
+            best_dx  = dx;
+        }
+    }
+    if (best < 0) return 0;
+    g_focus     = best;
+    g_status[0] = '\0';
+    return 1;
 }
 
 static int handle_key(int ch)
@@ -2482,22 +2532,29 @@ static int handle_key(int ch)
         return 0;
     }
 
+    /* ESC - leave the current field for the tab bar (field 0) */
+    if (ch == 27) {
+        g_focus     = 0;
+        g_status[0] = '\0';
+        return 0;
+    }
+
     /* F-key tab switch - always available, even in text/digit/spinner fields */
-    if (ch == KEY_F(1))  { g_tab = TAB_TIMER;    g_focus = 0; return 0; }
-    if (ch == KEY_F(2))  { g_tab = TAB_DATABASE; g_focus = 0; return 0; }
-    if (ch == KEY_F(3))  { g_tab = TAB_CALC;     g_focus = 0; return 0; }
-    if (ch == KEY_F(4))  { g_tab = TAB_CONFIG;   g_focus = 0; return 0; }
-    if (ch == KEY_F(11)) { g_tab = TAB_HELP;     g_focus = 0; return 0; }
-    if (ch == KEY_F(12)) { g_tab = TAB_QUIT; g_focus = 0; return 0; }
+    if (ch == KEY_F(1))  { switch_tab(TAB_TIMER);    return 0; }
+    if (ch == KEY_F(2))  { switch_tab(TAB_DATABASE); return 0; }
+    if (ch == KEY_F(3))  { switch_tab(TAB_CALC);     return 0; }
+    if (ch == KEY_F(4))  { switch_tab(TAB_CONFIG);   return 0; }
+    if (ch == KEY_F(11)) { switch_tab(TAB_HELP);     return 0; }
+    if (ch == KEY_F(12)) { switch_tab(TAB_QUIT);     return 0; }
 
     /* Global tab switch shortcuts - only when not in a text/digit/spinner field */
     {
         int ft = g_fields[g_focus].type;
         if (ft != FT_TEXT && ft != FT_DIGITS && ft != FT_SPINNER) {
-            if (ch == '1') { g_tab = TAB_TIMER;    g_focus = 0; return 0; }
-            if (ch == '2') { g_tab = TAB_DATABASE; g_focus = 0; return 0; }
-            if (ch == '3') { g_tab = TAB_CALC;     g_focus = 0; return 0; }
-            if (ch == '4') { g_tab = TAB_CONFIG;   g_focus = 0; return 0; }
+            if (ch == '1') { switch_tab(TAB_TIMER);    return 0; }
+            if (ch == '2') { switch_tab(TAB_DATABASE); return 0; }
+            if (ch == '3') { switch_tab(TAB_CALC);     return 0; }
+            if (ch == '4') { switch_tab(TAB_CONFIG);   return 0; }
         }
     }
 
@@ -2526,6 +2583,22 @@ static int handle_key(int ch)
     }
 
     f = &g_fields[g_focus];
+
+    /* Arrow navigation between fields.  Left/Right = previous/next field
+     * (except on the tab bar, where they switch tabs).  Up/Down move to the
+     * row above/below, unless the field uses them itself (spinner, list,
+     * dropdown). */
+    if (f->type != FT_TABS && (ch == KEY_LEFT || ch == KEY_RIGHT)) {
+        g_focus = (g_focus + (ch == KEY_RIGHT ? 1 : -1) + g_nfields) % g_nfields;
+        g_status[0] = '\0';
+        return 0;
+    }
+    if ((ch == KEY_UP || ch == KEY_DOWN) &&
+        (f->type == FT_TEXT || f->type == FT_DIGITS ||
+         f->type == FT_BUTTON || f->type == FT_TABS)) {
+        focus_vertical(ch == KEY_UP ? -1 : +1);
+        return 0;
+    }
 
     switch (f->type) {
 
@@ -2695,6 +2768,9 @@ main(void)
 #endif
 
     setenv("NCURSES_NO_UTF8_ACS", "1", 0);
+    /* ESC closes popups / leaves fields; don't wait the default 1 s
+     * for a possible escape sequence.                                */
+    setenv("ESCDELAY", "25", 0);
     setlocale(LC_ALL, "");
     {
         /* The wscons console (/dev/ttyC*) does not decode UTF-8: in a
