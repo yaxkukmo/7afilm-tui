@@ -206,15 +206,10 @@ draw_box_sides(int row, int col, int width)
     attroff(COLOR_PAIR(CP_BOX_LINE));
 }
 
-/* Popup frame: border drawn with the current attributes, plus a drop
- * shadow (one column right, one row below) recolored in place.       */
+/* Popup frame: border drawn with the current attributes */
 void
 draw_popup_frame(int top, int left, int height, int width)
 {
-    int rows = getmaxy(stdscr);
-    int cols = getmaxx(stdscr);
-    int r;
-
     mvaddch(top, left, g_ul);
     mvhline(top, left + 1, g_hl, width - 2);
     mvaddch(top, left + width - 1, g_ur);
@@ -223,15 +218,6 @@ draw_popup_frame(int top, int left, int height, int width)
     mvaddch(top + height - 1, left, g_ll);
     mvhline(top + height - 1, left + 1, g_hl, width - 2);
     mvaddch(top + height - 1, left + width - 1, g_lr);
-
-    if (!has_colors()) return;
-    if (left + width < cols)
-        for (r = top + 1; r <= top + height && r < rows; r++)
-            mvchgat(r, left + width, 1, A_NORMAL, CP_BUTTON, NULL);
-    if (top + height < rows && left + 1 < cols)
-        mvchgat(top + height, left + 1,
-                (left + width < cols ? width : cols - left - 1),
-                A_NORMAL, CP_BUTTON, NULL);
 }
 
 /* Section title row inside the flat main box */
