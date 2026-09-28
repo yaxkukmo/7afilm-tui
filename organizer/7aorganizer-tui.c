@@ -25,7 +25,7 @@
  *                  (see quickadd.h)
  *   /              search todos and entries by title or date and jump there
  *   [ / ]          scroll a long description in the viewer (Shift+Up/Down too)
- *   F1 / F2 / F3   Dashboard / Calendar (week) / Todo list tabs
+ *   F1 / F2 / F3   Dashboard / Calendar (month) / Todo list tabs
  *   Calendar:      a month like cal(1): arrows move the day (up / down a
  *                  week), PgUp / PgDn month, Home today; Tab / j / k pick
  *                  an entry of the day
@@ -74,7 +74,7 @@
 #define GROUP_TODO     3   /* open todos, under today on the dashboard */
 #define WEEK_DAYS      7   /* the dashboard covers today + 6 days */
 
-#define MIN_VIEWER_COLS 70 /* narrower terminals show the list only */
+#define MIN_VIEWER_COLS 50 /* narrower terminals show the list only */
 
 typedef struct {
     int         kind;    /* ROW_* */
@@ -182,16 +182,14 @@ clip(const char *s, int cols, char *out, size_t outsz)
         snprintf(out, outsz, "%.*s...", (int)utf8_fit(s, cols - 3, NULL), s);
 }
 
-/* Column of the list / viewer divider, or 0 when there is no viewer */
+/* Column of the list / viewer divider (the middle), or 0 when there is
+ * no viewer */
 static int
 viewer_split(void)
 {
     int cols = getmaxx(stdscr);
-    int vw   = cols / 3;
     if (cols < MIN_VIEWER_COLS) return 0;
-    if (vw < 26) vw = 26;
-    if (vw > 50) vw = 50;
-    return cols - vw - 1;
+    return cols / 2;
 }
 
 /* ------------------------------------------------------------------ */
