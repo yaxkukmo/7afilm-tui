@@ -12,7 +12,7 @@
 
 ## 7aorganizer-tui
 
-- [ ] Wielowierszowy opis: formularz edycji ma jedno pole tekstowe, więc przy
+- [x] Wielowierszowy opis: formularz edycji ma jedno pole tekstowe, więc przy
       edycji opisu nowe linie zamieniają się na spacje
 - [ ] Wpisy cykliczne: usunięcie kasuje całą serię; brak pominięcia jednego
       wystąpienia (np. odwołany standup) ani edycji tylko jednego terminu

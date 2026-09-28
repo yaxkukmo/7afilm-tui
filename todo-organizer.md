@@ -68,7 +68,11 @@ lub Save (albo Ctrl+S) zapisuje, Esc / Cancel zamyka.
   Date („30.09, jutro, pt, +3d”), Weekday albo Day (i Month), dalej Time
   i Duration w minutach
 - zadanie: Priority (high / normal / low), przy edycji Status (open / done)
-- Notes: opis, na razie jedna linia
+- Notes: opis; jednowierszowy można pisać w polu, a Ctrl+E otwiera go
+  w `$VISUAL`, `$EDITOR`, a bez nich w `nvim` (albo `vi`).  Opis
+  z kilkoma liniami zmienia się tylko w edytorze: pole pokazuje pierwszą
+  linię i „(+N lines)”, Enter na nim otwiera edytor.  Wyjście z błędem
+  (`:cq`) zostawia opis bez zmian
 
 Nowy wpis zaczyna się od dnia zaznaczonego w kalendarzu albo od dziś.
 Edycja wpisu cyklicznego zmienia całą serię.

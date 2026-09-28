@@ -1,3 +1,7 @@
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
+
 #include "edit.h"
 #include "date.h"
 #include "form.h"
@@ -6,9 +10,12 @@
 #include "tui.h"
 #include "utf8.h"
 
+#include <sys/wait.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define KIND_ENTRY 0
 #define KIND_TODO  1
@@ -16,6 +23,9 @@
 #define ACT_NONE   0
 #define ACT_SAVE   1
 #define ACT_CANCEL 2
+#define ACT_NOTES  3   /* open the notes in the editor */
+
+#define NOTES_LEN  8192
 
 /* Option order matches REC_*, weekday - 1, priority - 1 and done */
 static const char *repeat_opts[]  = { "none", "daily", "weekly", "monthly", "yearly", NULL };
@@ -37,7 +47,7 @@ static struct {
     char          err[128];
 
     char title[QA_TITLE_LEN];
-    char desc[1024];
+    char desc[NOTES_LEN];       /* may have several lines */
     char date[32];              /* entry, REC_NONE: any quick add date */
     char time[8];
     char duration[12];
@@ -64,6 +74,33 @@ flatten(char *dst, size_t dstsz, const char *src)
     snprintf(dst, dstsz, "%s", src);
     for (p = dst; *p; p++)
         if (*p == '\n' || *p == '\r' || *p == '\t') *p = ' ';
+}
+
+/* Notes keep their lines; tabs become spaces, CRs and trailing blank
+ * lines go.  Returns 0 when the text had to be cut. */
+static int
+set_notes(const char *src)
+{
+    char  *d = g_edit.desc;
+    size_t n = 0;
+
+    for (; *src && n < sizeof(g_edit.desc) - 1; src++) {
+        if (*src == '\r') continue;
+        d[n++] = *src == '\t' ? ' ' : *src;
+    }
+    /* cut in the middle of a UTF-8 character: drop its first bytes too */
+    if (((unsigned char)*src & 0xC0) == 0x80) {
+        while (n > 0 && ((unsigned char)d[n - 1] & 0xC0) == 0x80)
+            n--;
+        if (n > 0 && ((unsigned char)d[n - 1] & 0x80))
+            n--;
+    }
+    while (n > 0 && (d[n - 1] == '\n' || d[n - 1] == ' '))
+        n--;
+    d[n] = '\0';
+    while (*src == '\n' || *src == '\r' || *src == ' ' || *src == '\t')
+        src++;
+    return *src == '\0';
 }
 
 static void
@@ -112,7 +149,7 @@ edit_schedule_todo(sqlite3 *db, sqlite3_int64 todo_id, Day date)
     g_edit.scheduling = 1;
     g_edit.todo_id    = todo_id;
     flatten(g_edit.title, sizeof(g_edit.title), t.title);
-    flatten(g_edit.desc, sizeof(g_edit.desc), t.description);
+    set_notes(t.description);
     store_todo_free(&t);
     return 0;
 }
@@ -137,7 +174,7 @@ edit_open_entry(sqlite3 *db, sqlite3_int64 id)
     g_edit.id      = id;
     g_edit.todo_id = e.todo_id;
     flatten(g_edit.title, sizeof(g_edit.title), e.title);
-    flatten(g_edit.desc, sizeof(g_edit.desc), e.description);
+    set_notes(e.description);
     snprintf(g_edit.time, sizeof(g_edit.time), "%s", e.time);
     if (e.duration_min > 0)
         snprintf(g_edit.duration, sizeof(g_edit.duration), "%d", e.duration_min);
@@ -169,7 +206,7 @@ edit_open_todo(sqlite3 *db, sqlite3_int64 id)
     g_edit.db   = db;
     g_edit.id   = id;
     flatten(g_edit.title, sizeof(g_edit.title), t.title);
-    flatten(g_edit.desc, sizeof(g_edit.desc), t.description);
+    set_notes(t.description);
     g_edit.prio   = (t.priority >= 1 && t.priority <= 3) ? t.priority - 1 : 1;
     g_edit.status = t.done ? 1 : 0;
     store_todo_free(&t);
@@ -319,8 +356,141 @@ try_save(void)
 /* Drawing                                                             */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Notes in an external editor                                         */
+/* ------------------------------------------------------------------ */
+
+/* $VISUAL or $EDITOR (may have arguments), or NULL for nvim / vi */
+static const char *
+editor_command(void)
+{
+    const char *ed = getenv("VISUAL");
+    if (!ed || !ed[0]) ed = getenv("EDITOR");
+    return ed && ed[0] ? ed : NULL;
+}
+
+/* Returns the editor's exit status, -1 when it could not be started */
+static int
+run_editor(const char *path)
+{
+    const char *ed = editor_command();
+    pid_t pid;
+    int   status;
+
+    if ((pid = fork()) < 0)
+        return -1;
+    if (pid == 0) {
+        if (ed) {
+            char cmd[512];
+            snprintf(cmd, sizeof(cmd), "%s \"$1\"", ed);
+            execl("/bin/sh", "sh", "-c", cmd, "sh", path, (char *)NULL);
+        } else {
+            execlp("nvim", "nvim", path, (char *)NULL);
+            execlp("vi", "vi", path, (char *)NULL);
+        }
+        _exit(127);
+    }
+    while (waitpid(pid, &status, 0) < 0)
+        if (errno != EINTR)
+            return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+/* Write the notes to a temporary file, let the editor change it and
+ * read it back.  Curses is suspended meanwhile. */
+static void
+edit_notes(void)
+{
+    const char *tmp = getenv("TMPDIR");
+    char  path[512], *text;
+    FILE *f;
+    long  size;
+    int   fd, rc;
+
+    snprintf(path, sizeof(path), "%s/7aorganizer-XXXXXX",
+             tmp && tmp[0] ? tmp : "/tmp");
+    if ((fd = mkstemp(path)) < 0) {
+        set_error("Cannot create a temporary file for the editor");
+        return;
+    }
+    if ((f = fdopen(fd, "w")) == NULL) {
+        close(fd);
+        unlink(path);
+        set_error("Cannot write the temporary file");
+        return;
+    }
+    fprintf(f, g_edit.desc[0] ? "%s\n" : "%s", g_edit.desc);
+    if (fclose(f) != 0) {
+        unlink(path);
+        set_error("Cannot write the temporary file");
+        return;
+    }
+
+    def_prog_mode();
+    endwin();
+    rc = run_editor(path);
+    reset_prog_mode();
+    clearok(curscr, TRUE);
+    refresh();
+
+    if (rc != 0) {
+        unlink(path);
+        set_error(rc == 127 ? "No editor found: set $EDITOR"
+                            : "The editor failed; notes not changed");
+        return;
+    }
+    f = fopen(path, "r");
+    unlink(path);
+    if (!f) {
+        set_error("Cannot read the notes back");
+        return;
+    }
+    /* read a bit more than fits, so set_notes() sees the text is cut */
+    text = malloc(NOTES_LEN + 4);
+    size = text ? (long)fread(text, 1, NOTES_LEN + 3, f) : -1;
+    fclose(f);
+    if (size < 0) {
+        set_error("Out of memory");
+        return;
+    }
+    text[size] = '\0';
+    if (!set_notes(text))
+        set_error("Notes are too long and were cut");
+    free(text);
+}
+
 static void cb_save(void *arg)   { (void)arg; g_edit.action = ACT_SAVE; }
 static void cb_cancel(void *arg) { (void)arg; g_edit.action = ACT_CANCEL; }
+static void cb_notes(void *arg)  { (void)arg; g_edit.action = ACT_NOTES; }
+
+/* Notes with several lines can only be edited in the editor: the field
+ * shows the first line and how many more there are */
+static void
+draw_notes_field(int row, int col, int width)
+{
+    char   first[256], more[32];
+    const char *nl = strchr(g_edit.desc, '\n');
+    int    idx, focused, lines = 1, mw;
+    size_t len = (size_t)(nl - g_edit.desc);
+
+    for (; nl; nl = strchr(nl + 1, '\n'))
+        lines++;
+    snprintf(first, sizeof(first), "%.*s", (int)len, g_edit.desc);
+    snprintf(more, sizeof(more), " (+%d lines)", lines - 1);
+    mw = utf8_width(more);
+    if (mw > width) mw = width;
+
+    idx     = field_reg(FT_BUTTON, NULL, 0, 0, cb_notes, NULL, row, col, width);
+    focused = (idx >= 0 && idx == g_focus);
+    if (focused)
+        attron(COLOR_PAIR(CP_INPUT) | A_BOLD | (g_basic_colors ? A_REVERSE : 0));
+    else
+        attron(COLOR_PAIR(CP_INPUT));
+    tui_put_text(row, col, width - mw, first);
+    attron(A_DIM);
+    tui_put_text(row, col + width - mw, mw, more);
+    attroff(COLOR_PAIR(CP_INPUT) | A_BOLD | A_REVERSE | A_DIM);
+}
 
 static void
 label(int row, int col, const char *text)
@@ -446,8 +616,17 @@ edit_draw(void)
     }
 
     label(r, lc, "Notes:");
-    draw_textfield(r, fc, fw, g_edit.desc, sizeof(g_edit.desc), FT_TEXT, 0);
-    r += 2;
+    if (strchr(g_edit.desc, '\n'))
+        draw_notes_field(r, fc, fw);
+    else
+        draw_textfield(r, fc, fw, g_edit.desc, sizeof(g_edit.desc), FT_TEXT, 0);
+    r++;
+    {
+        char h[80];
+        snprintf(h, sizeof(h), "Ctrl+E: notes in %s", editor_command() ? editor_command() : "nvim");
+        hint(r, fc, fw, h);
+    }
+    r++;
 
     draw_button(r, left + w / 2 - 10, "Save", cb_save, NULL);
     draw_button(r, left + w / 2 + 2, "Cancel", cb_cancel, NULL);
@@ -485,6 +664,10 @@ edit_key(int ch)
     }
     if (ch == ('s' & 0x1f))                             /* Ctrl+S */
         return try_save();
+    if (ch == ('e' & 0x1f)) {                           /* Ctrl+E */
+        edit_notes();
+        return EDIT_HANDLED;
+    }
 
     ft = (g_focus >= 0 && g_focus < g_nfields) ? g_fields[g_focus].type : -1;
     if ((ch == '\n' || ch == '\r' || ch == KEY_ENTER) && (ft == FT_TEXT || ft == FT_DIGITS))
@@ -494,6 +677,10 @@ edit_key(int ch)
     form_field_key(ch);
     if (g_edit.action == ACT_SAVE)
         return try_save();
+    if (g_edit.action == ACT_NOTES) {
+        edit_notes();
+        return EDIT_HANDLED;
+    }
     if (g_edit.action == ACT_CANCEL) {
         g_edit.open = 0;
         return EDIT_CANCELLED;

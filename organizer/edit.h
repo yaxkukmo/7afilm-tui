@@ -5,7 +5,8 @@
  * edit.h - centered form to add or edit a calendar entry or a todo.
  * Tab / arrows move between fields, Enter in a text field or the Save
  * button (or Ctrl+S) saves, Esc or Cancel closes without saving.
- * Descriptions are edited as a single line.
+ * Ctrl+E opens the notes in $VISUAL, $EDITOR or else nvim (vi); notes
+ * with several lines can only be changed that way (Enter on the field).
  */
 
 #include <sqlite3.h>
