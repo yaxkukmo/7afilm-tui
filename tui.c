@@ -3,6 +3,7 @@
 #endif
 
 #include "tui.h"
+#include "utf8.h"
 
 #include <locale.h>
 #include <stdlib.h>
@@ -125,6 +126,36 @@ tui_init(void)
     keypad(stdscr, TRUE);
     nodelay(stdscr, TRUE);
     curs_set(1);
+}
+
+int
+tui_getkey(void)
+{
+    wint_t wc;
+    int    r = get_wch(&wc);
+
+    if (r == ERR)          return ERR;
+    if (r == KEY_CODE_YES) return (int)wc;
+    if (wc < 0x80)         return (int)wc;
+    return TUI_WCHAR | (int)wc;
+}
+
+int
+tui_is_text(int ch)
+{
+    return (ch >= 32 && ch < 127) || (ch & TUI_WCHAR);
+}
+
+void
+tui_put_text(int row, int col, int cols, const char *s)
+{
+    int    w;
+    size_t n = utf8_fit(s, cols, &w);
+
+    move(row, col);
+    addnstr(s, (int)n);
+    for (; w < cols; w++)
+        addch(' ');
 }
 
 /* ------------------------------------------------------------------ */

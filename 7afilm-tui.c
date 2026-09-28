@@ -856,7 +856,7 @@ draw_save_section(int row)
     draw_box_sides(row, 0, bw);
     draw_label(row, "Name:");
     attron(A_DIM | COLOR_PAIR(CP_BOX));
-    mvprintw(row, fc, "%-*s", save_col - fc - 1, g_preset_name);
+    tui_put_text(row, fc, save_col - fc - 1, g_preset_name);
     attroff(A_DIM | COLOR_PAIR(CP_BOX));
     draw_button(row, save_col, "Save", cb_save_preset, NULL);
     row++;
@@ -1590,7 +1590,7 @@ draw_all(void)
     mvaddch(rows - 2, 0, g_vl);
     attroff(COLOR_PAIR(CP_BOX_LINE));
     attron(COLOR_PAIR(CP_BOX));
-    mvprintw(rows - 2, 1, "%-*s", cols - 2, g_status);
+    tui_put_text(rows - 2, 1, cols - 2, g_status);
     attroff(COLOR_PAIR(CP_BOX));
     attron(COLOR_PAIR(CP_BOX_LINE));
     mvaddch(rows - 2, cols - 1, g_vl);
@@ -1790,7 +1790,7 @@ main(void)
     draw_all();
 
     while (!quit) {
-        while ((ch = getch()) != ERR) {
+        while ((ch = tui_getkey()) != ERR) {
             handle_key(ch);
             draw_all();
             if (g_want_quit) { quit = 1; break; }

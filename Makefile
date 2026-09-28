@@ -10,20 +10,23 @@ CC      = cc
 CFLAGS  = -std=c99 -Wall -Wextra -O2 $(SQLITE_CFLAGS) $(CURSES_CFLAGS)
 LDFLAGS = $(SQLITE_LIBS) $(CURSES_LIBS) -lm
 
-OBJS = tui.o form.o listpopup.o db.o dynlist.o timer.o 7afilm-tui.o
+OBJS = utf8.o tui.o form.o listpopup.o db.o dynlist.o timer.o 7afilm-tui.o
 
 all: 7afilm-tui
 
 7afilm-tui: $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
-tui.o: tui.c tui.h
+utf8.o: utf8.c utf8.h
+	$(CC) $(CFLAGS) -c utf8.c
+
+tui.o: tui.c tui.h utf8.h
 	$(CC) $(CFLAGS) -c tui.c
 
-form.o: form.c form.h tui.h
+form.o: form.c form.h tui.h utf8.h
 	$(CC) $(CFLAGS) -c form.c
 
-listpopup.o: listpopup.c listpopup.h form.h tui.h
+listpopup.o: listpopup.c listpopup.h form.h tui.h utf8.h
 	$(CC) $(CFLAGS) -c listpopup.c
 
 db.o: db.c db.h

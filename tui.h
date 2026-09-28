@@ -6,8 +6,18 @@
  * 7a curses applications.
  */
 
+#ifndef NCURSES_WIDECHAR
+#define NCURSES_WIDECHAR 1  /* get_wch() */
+#endif
+
 #include <curses.h>
 #include <signal.h>
+
+/* Keys from tui_getkey(): ASCII characters and curses KEY_* codes as
+ * they are; other characters as TUI_WCHAR | code point, since code
+ * points such as U+0105 (a-ogonek) overlap the KEY_* range.            */
+#define TUI_WCHAR   0x40000000
+#define TUI_CP(ch)  ((unsigned)((ch) & ~TUI_WCHAR))
 
 #define CP_BUTTON     1  /* white on black - button background          */
 #define CP_BOX        2  /* box interior fill: fg=default, bg=#033535   */
@@ -34,6 +44,12 @@ extern char g_status[128];
 extern volatile sig_atomic_t g_resize;
 
 void tui_init(void);
+int  tui_getkey(void);      /* ERR when no key is waiting */
+int  tui_is_text(int ch);   /* printable character, not a control key */
+
+/* UTF-8 text clipped / padded with spaces to exactly `cols` columns,
+ * in the current attributes. */
+void tui_put_text(int row, int col, int cols, const char *s);
 
 void draw_box_bottom(int row, int col, int width);
 void draw_box_top_plain(int row, int col, int width);

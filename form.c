@@ -1,5 +1,6 @@
 #include "form.h"
 #include "tui.h"
+#include "utf8.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,16 +59,12 @@ draw_textfield(int row, int col, int width,
 {
     int idx     = field_reg(type, buf, bufsz, maxval, NULL, NULL, row, col, width);
     int focused = (idx >= 0 && idx == g_focus);
-    int len     = (int)strlen(buf);
-    int i;
 
     if (focused)
         attron(COLOR_PAIR(CP_INPUT) | A_BOLD | (g_basic_colors ? A_REVERSE : 0));
     else
         attron(COLOR_PAIR(CP_INPUT));
-    move(row, col);
-    for (i = 0; i < width; i++)
-        addch(i < len ? (unsigned char)buf[i] : ' ');
+    tui_put_text(row, col, width, buf);
     if (focused)
         attroff(COLOR_PAIR(CP_INPUT) | A_BOLD | A_REVERSE);
     else
@@ -115,7 +112,7 @@ draw_dropdown(int row, int col, int width,
               void (*on_confirm)(int))
 {
     DropdownMeta *dm;
-    int n, idx, focused, len, i;
+    int n, idx, focused;
     const char *val;
 
     for (n = 0; options[n]; n++);
@@ -131,15 +128,12 @@ draw_dropdown(int row, int col, int width,
     idx     = field_reg(FT_DROPDOWN, buf, bufsz, n - 1, NULL, dm, row, col, width);
     focused = (idx >= 0 && idx == g_focus);
     val     = (*index >= 0 && *index < n) ? options[*index] : "";
-    len     = (int)strlen(val);
 
     if (focused)
         attron(COLOR_PAIR(CP_INPUT) | A_BOLD | (g_basic_colors ? A_REVERSE : 0));
     else
         attron(COLOR_PAIR(CP_INPUT));
-    move(row, col);
-    for (i = 0; i < width - 2; i++)
-        addch(i < len ? (unsigned char)val[i] : ' ');
+    tui_put_text(row, col, width - 2, val);
     addch(' ');
     addch(ACS_DARROW);
     if (focused)
@@ -203,7 +197,7 @@ draw_dropdown_popup(void)
 
     pw = g_popup_fwidth;
     for (i = 0; i < n; i++) {
-        int l = (int)strlen(g_popup_dm->options[i]) + 4;
+        int l = utf8_width(g_popup_dm->options[i]) + 4;
         if (l > pw) pw = l;
     }
     if (pw > cols) pw = cols;
@@ -232,10 +226,8 @@ draw_dropdown_popup(void)
     for (i = 0; i < max_vis; i++) {
         int idx    = g_popup_scroll + i;
         int is_sel = (idx == g_popup_sel);
-        int j, vlen;
 
-        val  = g_popup_dm->options[idx];
-        vlen = (int)strlen(val);
+        val = g_popup_dm->options[idx];
 
         if (is_sel) attron(A_REVERSE | A_BOLD);
         move(pr + 1 + i, pc + 1);
@@ -245,8 +237,7 @@ draw_dropdown_popup(void)
             addch(ACS_DARROW);
         else
             addch(' ');
-        for (j = 0; j < pw - 3; j++)
-            addch(j < vlen ? (unsigned char)val[j] : ' ');
+        tui_put_text(pr + 1 + i, pc + 2, pw - 3, val);
         if (is_sel) attroff(A_REVERSE | A_BOLD);
     }
 }
@@ -258,8 +249,8 @@ form_place_cursor(void)
     if (g_focus >= 0 && g_focus < g_nfields) {
         Field *f = &g_fields[g_focus];
         if (f->type == FT_TEXT || f->type == FT_DIGITS || f->type == FT_SPINNER) {
-            int len  = (int)strlen(f->buf);
-            int cpos = len < f->width ? len : f->width - 1;
+            int w    = utf8_width(f->buf);
+            int cpos = w < f->width ? w : f->width - 1;
             move(f->row, f->col + cpos);
             curs_set(1);
         } else {
@@ -274,23 +265,18 @@ form_place_cursor(void)
 /* Input handling                                                      */
 /* ------------------------------------------------------------------ */
 
+/* Append a key from tui_getkey() as UTF-8 */
 int
 buf_insert(char *buf, size_t bufsz, int ch)
 {
-    int len = (int)strlen(buf);
-    if (len + 1 >= (int)bufsz) return 0;
-    buf[len]     = (char)ch;
-    buf[len + 1] = '\0';
-    return 1;
+    return utf8_append(buf, bufsz, TUI_CP(ch));
 }
 
+/* Remove the last character (not byte) */
 int
 buf_backspace(char *buf)
 {
-    int len = (int)strlen(buf);
-    if (len == 0) return 0;
-    buf[len - 1] = '\0';
-    return 1;
+    return utf8_pop(buf);
 }
 
 static void
@@ -408,7 +394,7 @@ form_field_key(int ch)
     case FT_TEXT:
         if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
             buf_backspace(f->buf);
-        else if (ch >= 32 && ch < 127)
+        else if (tui_is_text(ch))
             buf_insert(f->buf, f->bufsz, ch);
         break;
 

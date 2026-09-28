@@ -1,6 +1,7 @@
 #include "listpopup.h"
 #include "form.h"
 #include "tui.h"
+#include "utf8.h"
 
 #include <string.h>
 
@@ -10,44 +11,16 @@ lp_total(const ListPopup *lp)
     return lp->nmatches + (lp->extra ? 1 : 0);
 }
 
-static char
-lower_ascii(unsigned char c)
-{
-    return (char)(c >= 'A' && c <= 'Z' ? c + 32 : c);
-}
-
 static void
 rebuild_matches(ListPopup *lp)
 {
-    int n    = lp->count(lp->ctx);
-    int qlen = (int)strlen(lp->query);
-    char query[LP_QUERY_LEN];
+    int n = lp->count(lp->ctx);
     int i, total;
 
-    for (i = 0; i < qlen; i++)
-        query[i] = lower_ascii((unsigned char)lp->query[i]);
-    query[qlen] = '\0';
-
     lp->nmatches = 0;
-    for (i = 0; i < n && lp->nmatches < LP_MAX_MATCHES; i++) {
-        if (qlen == 0) {
+    for (i = 0; i < n && lp->nmatches < LP_MAX_MATCHES; i++)
+        if (utf8_contains_ci(lp->item(lp->ctx, i), lp->query))
             lp->matches[lp->nmatches++] = i;
-        } else {
-            const char *name = lp->item(lp->ctx, i);
-            int nlen = (int)strlen(name);
-            int j, k;
-            for (j = 0; j <= nlen - qlen; j++) {
-                int match = 1;
-                for (k = 0; k < qlen; k++) {
-                    if (lower_ascii((unsigned char)name[j + k]) != query[k]) {
-                        match = 0;
-                        break;
-                    }
-                }
-                if (match) { lp->matches[lp->nmatches++] = i; break; }
-            }
-        }
-    }
 
     total = lp_total(lp);
     if (lp->sel >= total)
@@ -83,7 +56,7 @@ listpopup_selected(const ListPopup *lp)
 void
 listpopup_draw(ListPopup *lp)
 {
-    int rows, cols, pw, pr, pc, fc, fw, i, len, r, total;
+    int rows, cols, pw, pr, pc, fc, fw, i, qw, r, total;
 
     if (!lp->open) return;
 
@@ -112,12 +85,10 @@ listpopup_draw(ListPopup *lp)
     r = pr + 1;
 
     /* Search input row */
-    len = (int)strlen(lp->query);
+    qw = utf8_width(lp->query);
     mvprintw(r, pc + 1, "%s", lp->prompt);
     attron(A_REVERSE | A_BOLD);
-    move(r, fc);
-    for (i = 0; i < fw; i++)
-        addch(i < len ? (unsigned char)lp->query[i] : ' ');
+    tui_put_text(r, fc, fw, lp->query);
     attroff(A_REVERSE | A_BOLD);
     r++;
 
@@ -136,8 +107,6 @@ listpopup_draw(ListPopup *lp)
             int k      = row_idx - (lp->extra ? 1 : 0);
             const char *label = k < 0 ? lp->extra
                                       : lp->item(lp->ctx, lp->matches[k]);
-            int llen = (int)strlen(label);
-            int j;
             if (is_sel) attron(A_REVERSE | A_BOLD);
             move(r, pc + 1);
             if (i == 0 && lp->scroll > 0)
@@ -146,8 +115,7 @@ listpopup_draw(ListPopup *lp)
                 addch(ACS_DARROW);
             else
                 addch(' ');
-            for (j = 0; j < pw - 3; j++)
-                addch(j < llen ? (unsigned char)label[j] : ' ');
+            tui_put_text(r, pc + 2, pw - 3, label);
             if (is_sel) attroff(A_REVERSE | A_BOLD);
         } else if (i == 0 && total == 0) {
             attron(A_DIM);
@@ -171,7 +139,7 @@ listpopup_draw(ListPopup *lp)
 
     /* Cursor in search field */
     {
-        int cpos = len < fw ? len : fw - 1;
+        int cpos = qw < fw ? qw : fw - 1;
         move(pr + 1, fc + cpos);
         curs_set(1);
     }
@@ -188,7 +156,7 @@ listpopup_key(ListPopup *lp, int ch)
     if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b') {
         buf_backspace(lp->query);
         rebuild_matches(lp);
-    } else if (ch >= 32 && ch < 127) {
+    } else if (tui_is_text(ch)) {
         buf_insert(lp->query, sizeof(lp->query), ch);
         rebuild_matches(lp);
     } else if (ch == KEY_UP) {
