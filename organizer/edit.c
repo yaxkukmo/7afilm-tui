@@ -572,7 +572,7 @@ edit_draw(void)
         case REC_NONE:
             label(r, lc, "Date:");
             draw_textfield(r, fc, 14, g_edit.date, sizeof(g_edit.date), FT_TEXT, 0);
-            hint(r, fc + 16, fw - 16, "30.09, jutro, pt, +3d");
+            hint(r, fc + 16, fw - 16, "30.09, tomorrow, fri, +3d");
             break;
         case REC_DAILY:
             hint(r, fc, fw, "every day");

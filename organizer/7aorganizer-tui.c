@@ -22,7 +22,7 @@
  *   x              delete the selected item (asks y/n)
  *   n              new entry or todo in the form (Type picks which; an
  *                  entry starts on the selected calendar day or today)
- *   a              quick add in one line: "dentysta jutro 15:00" goes to the
+ *   a              quick add in one line: "dentist tomorrow 3pm" goes to the
  *                  calendar, text without a date or time becomes a todo
  *                  (see quickadd.h)
  *   /              search todos and entries by title, date or description
@@ -493,10 +493,10 @@ start_quick_add(void)
         day_to_ymd(g_cal_day, &y, &m, &d);
         snprintf(prompt, sizeof(prompt), "New on %s %02d.%02d: ",
                  weekday_short[day_weekday(g_cal_day)], d, m);
-        inputline_open(&g_input, prompt, "e.g. dentysta 15:00");
+        inputline_open(&g_input, prompt, "e.g. dentist 3pm");
     } else {
         inputline_open(&g_input, "New: ",
-                       "e.g. dentysta jutro 15:00   or   pomysł !high");
+                       "e.g. dentist tomorrow 3pm   or   idea !high");
     }
 }
 
