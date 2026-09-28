@@ -89,7 +89,7 @@ film/timer.o: film/timer.c film/timer.h lib/tui.h
 	$(CC) $(CFLAGS) -c film/timer.c -o $@
 
 film/7afilm-tui.o: film/7afilm-tui.c film/timer.h lib/db.h lib/dynlist.h \
-                   lib/form.h lib/listpopup.h lib/tabbar.h lib/tui.h
+                   lib/form.h lib/listpopup.h lib/tabbar.h lib/tui.h lib/utf8.h
 	$(CC) $(CFLAGS) -c film/7afilm-tui.c -o $@
 
 clean:

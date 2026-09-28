@@ -40,6 +40,12 @@ listpopup_open(ListPopup *lp)
 }
 
 void
+listpopup_refresh(ListPopup *lp)
+{
+    rebuild_matches(lp);
+}
+
+void
 listpopup_close(ListPopup *lp)
 {
     lp->open = 0;

@@ -36,6 +36,8 @@ typedef struct {
 
 void listpopup_open(ListPopup *lp);
 void listpopup_close(ListPopup *lp);
+/* Re-read the items (after they changed), keeping the query */
+void listpopup_refresh(ListPopup *lp);
 void listpopup_draw(ListPopup *lp);
 int  listpopup_key(ListPopup *lp, int ch);
 /* Item index of the selected row, or -1 for the extra row */

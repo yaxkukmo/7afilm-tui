@@ -37,6 +37,7 @@
 #include "tabbar.h"
 #include "timer.h"
 #include "tui.h"
+#include "utf8.h"
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -112,10 +113,15 @@ static int preset_count(void *ctx) { (void)ctx; return g_preset_count; }
 static const char *preset_name(void *ctx, int i) { (void)ctx; return g_presets[i].name; }
 
 static ListPopup g_search_popup = {
-    " Search: ", " Enter=load  Esc=cancel  Up/Down=select", NULL,
+    " Search: ", " Enter=load  Del=delete  Esc=cancel", NULL,
     preset_count, preset_name, NULL,
     0, "", 0, 0, {0}, 0
 };
+
+/* "Delete preset?" question over the search popup */
+static int           g_confirm_delete = 0;
+static sqlite3_int64 g_delete_id;
+static char          g_confirm_msg[120];
 
 /* Dynamic lists */
 static DynList g_films;
@@ -405,6 +411,21 @@ LoadPresetList(void)
         g_preset_count++;
     }
     sqlite3_finalize(stmt);
+}
+
+static void
+DeletePreset(sqlite3_int64 id)
+{
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(g_db,
+            "DELETE FROM presets WHERE id=?1;", -1, &stmt, NULL) != SQLITE_OK) return;
+    sqlite3_bind_int64(stmt, 1, id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (g_preset_loaded_id == id)
+        g_preset_loaded_id = -1;
+    LoadPresetList();
+    snprintf(g_status, sizeof(g_status), "Preset deleted.");
 }
 
 static void
@@ -1352,6 +1373,7 @@ draw_help_tab(int row)
     attron(COLOR_PAIR(CP_BOX));
     mvprintw(r++, INDENT, "  Enter           Activate timer");
     mvprintw(r++, INDENT, "  Load Preset     Search presets");
+    mvprintw(r++, INDENT, "  Delete          Delete the preset (in the search)");
     attroff(COLOR_PAIR(CP_BOX));
     r++;
 
@@ -1515,6 +1537,8 @@ draw_all(void)
     form_place_cursor();
     draw_dropdown_popup();
     listpopup_draw(&g_search_popup);
+    if (g_confirm_delete)
+        draw_confirm_box(g_confirm_msg);
     refresh();
 }
 
@@ -1539,6 +1563,18 @@ static int handle_key(int ch)
     if (g_focus < 0)          g_focus = 0;
     if (g_focus >= g_nfields) g_focus = g_nfields - 1;
 
+    /* y/n question over the search popup */
+    if (g_confirm_delete) {
+        if (ch == 'y' || ch == 'Y') {
+            g_confirm_delete = 0;
+            DeletePreset(g_delete_id);
+            listpopup_refresh(&g_search_popup);
+        } else if (ch == 'n' || ch == 'N' || ch == 27) {
+            g_confirm_delete = 0;
+        }
+        return 0;
+    }
+
     /* PageUp / PageDown — scroll content area */
     if (ch == KEY_PPAGE) {
         int rows_h = getmaxy(stdscr);
@@ -1560,6 +1596,19 @@ static int handle_key(int ch)
             snprintf(g_status, sizeof(g_status), "Stop all timers before quitting.");
         else
             g_want_quit = 1;
+        return 0;
+    }
+
+    /* Delete key in the search popup: ask first */
+    if (g_search_popup.open && ch == KEY_DC) {
+        int idx = listpopup_selected(&g_search_popup);
+        if (idx >= 0) {
+            const char *name = g_presets[idx].name;
+            g_delete_id = g_presets[idx].id;
+            snprintf(g_confirm_msg, sizeof(g_confirm_msg), "Delete preset \"%.*s\"?",
+                     (int)utf8_fit(name, 40, NULL), name);
+            g_confirm_delete = 1;
+        }
         return 0;
     }
 
