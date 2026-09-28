@@ -465,12 +465,24 @@ ask_delete(void)
     }
 }
 
+/* Calendar tab: new entries go on the selected day unless the text
+ * names a date; elsewhere text without a date becomes a todo */
 static void
 start_new(void)
 {
+    static char prompt[40];
+
     g_input_mode = INPUT_NEW;
-    inputline_open(&g_input, "New: ",
-                   "e.g. dentysta jutro 15:00   or   pomysł !high");
+    if (g_view == VIEW_CALENDAR) {
+        int y, m, d;
+        day_to_ymd(g_cal_day, &y, &m, &d);
+        snprintf(prompt, sizeof(prompt), "New on %s %02d.%02d: ",
+                 weekday_short[day_weekday(g_cal_day)], d, m);
+        inputline_open(&g_input, prompt, "e.g. dentysta 15:00");
+    } else {
+        inputline_open(&g_input, "New: ",
+                       "e.g. dentysta jutro 15:00   or   pomysł !high");
+    }
 }
 
 static void
@@ -497,6 +509,10 @@ submit_new(void)
     if (!quickadd_parse(g_input.text, day_today(), &qa, err, sizeof(err))) {
         snprintf(g_status, sizeof(g_status), "%s", err);
         return;                                 /* keep the prompt open */
+    }
+    if (g_view == VIEW_CALENDAR && !qa.date_given) {
+        qa.has_date = 1;
+        qa.date     = g_cal_day;
     }
     if (qa.has_date) {
         Entry e;

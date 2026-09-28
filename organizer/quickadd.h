@@ -25,7 +25,8 @@
 
 typedef struct {
     char title[QA_TITLE_LEN];
-    int  has_date;
+    int  has_date;       /* a date, or a time alone (then date = today) */
+    int  date_given;     /* the date was written, not implied by a time */
     Day  date;
     char time[6];        /* "HH:MM" or "" */
     int  priority;       /* 1 = high .. 3 = low, 0 = not given */

@@ -357,6 +357,13 @@ test_quickadd(int utf8_locale)
     if (utf8_locale)
         qa("Kino w PIĄTEK",            "Kino|2026-10-02||0");
 
+    {
+        QuickAdd q;
+        CHECK(quickadd_parse("lunch 13:15", D("2026-09-28"), &q, err, sizeof(err)));
+        CHECK(q.has_date && !q.date_given);
+        CHECK(quickadd_parse("lunch jutro", D("2026-09-28"), &q, err, sizeof(err)));
+        CHECK(q.has_date && q.date_given);
+    }
     CHECK(quickadd_parse_when("jutro 15:00", D("2026-09-28"), &d, t, err, sizeof(err)));
     CHECK(d == D("2026-09-29") && strcmp(t, "15:00") == 0);
     CHECK(quickadd_parse_when("30.09", D("2026-09-28"), &d, t, err, sizeof(err)));

@@ -227,9 +227,10 @@ parse_line(const char *s, Day today, QuickAdd *out, char *err, size_t errsz,
                 snprintf(err, errsz, "More than one date: %s", tok[i]);
                 return 0;
             }
-            out->has_date = 1;
-            out->date     = d;
-            kind[i]       = T_DATE;
+            out->has_date   = 1;
+            out->date_given = 1;
+            out->date       = d;
+            kind[i]         = T_DATE;
         } else if ((r = parse_time(tok[i], t)) != 0) {
             if (r < 0) {
                 snprintf(err, errsz, "No such time: %s", tok[i]);
