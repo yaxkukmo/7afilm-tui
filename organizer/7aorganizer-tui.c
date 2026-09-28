@@ -18,8 +18,11 @@
  *   Space          toggle a todo done
  *   s              schedule the selected todo ("jutro 15:00")
  *   x              delete the selected item (asks y/n)
- *   n              quick add: "dentysta jutro 15:00" goes to the calendar,
- *                  text without a date or time becomes a todo (see quickadd.h)
+ *   n              new entry or todo in the form (Type picks which; an
+ *                  entry starts on the selected calendar day or today)
+ *   a              quick add in one line: "dentysta jutro 15:00" goes to the
+ *                  calendar, text without a date or time becomes a todo
+ *                  (see quickadd.h)
  *   /              search todos and entries by title or date and jump there
  *   [ / ]          scroll a long description in the viewer (Shift+Up/Down too)
  *   F1 / F2 / F3   Dashboard / Calendar (week) / Todo list tabs
@@ -465,10 +468,23 @@ ask_delete(void)
     }
 }
 
-/* Calendar tab: new entries go on the selected day unless the text
- * names a date; elsewhere text without a date becomes a todo */
+static int g_edit_is_new;   /* the open form adds rather than edits */
+
+/* Form for a new item: a todo in the Todo tab or when a todo is
+ * selected, otherwise an entry on the selected calendar day / today */
 static void
 start_new(void)
+{
+    int todo = g_view == VIEW_TODO || (g_view == VIEW_DASHBOARD && selected_todo());
+    edit_new(g_db, todo, g_view == VIEW_CALENDAR ? g_cal_day : day_today());
+    g_edit_is_new = 1;
+}
+
+/* One-line quick add.  Calendar tab: entries go on the selected day
+ * unless the text names a date; elsewhere text without a date becomes
+ * a todo */
+static void
+start_quick_add(void)
 {
     static char prompt[40];
 
@@ -623,6 +639,7 @@ start_edit(void)
     const TodoRow    *t = selected_todo();
     int rc = -1;
 
+    g_edit_is_new = 0;
     if (o)      rc = edit_open_entry(g_db, o->entry_id);
     else if (t) rc = edit_open_todo(g_db, t->id);
     else        return;
@@ -1138,6 +1155,7 @@ draw_buttons(int row, int col, int cols)
     int n = 0, i;
 
     b[n++] = "n:New";
+    b[n++] = "a:Quick add";
     if (selected_todo()) {
         b[n++] = "Enter:Edit";
         b[n++] = "Space:Done";
@@ -1300,8 +1318,17 @@ handle_key(int ch)
     case EDIT_IGNORED:
         break;
     case EDIT_SAVED:
-        snprintf(g_status, sizeof(g_status), "Saved.");
         load_model();
+        if (g_edit_is_new) {
+            int todo;
+            sqlite3_int64 id;
+            Day date;
+            edit_saved_item(&todo, &id, &date);
+            select_new(todo, id, date);
+            snprintf(g_status, sizeof(g_status), todo ? "Added a todo." : "Added to the calendar.");
+        } else {
+            snprintf(g_status, sizeof(g_status), "Saved.");
+        }
         return;
     default:
         return;
@@ -1336,6 +1363,9 @@ handle_key(int ch)
     switch (ch) {
     case 'n':
         start_new();
+        return;
+    case 'a':
+        start_quick_add();
         return;
     case 's':
         start_schedule();

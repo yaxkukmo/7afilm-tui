@@ -23,9 +23,11 @@ static const char *weekday_opts[] = { "Monday", "Tuesday", "Wednesday", "Thursda
                                       "Friday", "Saturday", "Sunday", NULL };
 static const char *prio_opts[]    = { "high", "normal", "low", NULL };
 static const char *status_opts[]  = { "open", "done", NULL };
+static const char *type_opts[]    = { "calendar entry", "todo", NULL };  /* KIND_* */
 
 static struct {
     int           open;
+    int           is_new;       /* adding: Type can switch the kind */
     int           kind;
     int           action;       /* set by the buttons */
     sqlite3      *db;
@@ -45,6 +47,12 @@ static struct {
     int  weekday;  char weekday_buf[16];
     int  prio;     char prio_buf[16];
     int  status;   char status_buf[16];
+    int  type;     char type_buf[20];   /* new items: KIND_* */
+
+    /* What the last save stored, for the caller to select it */
+    int           saved_todo;
+    sqlite3_int64 saved_id;
+    Day           saved_date;
 } g_edit;
 
 /* One-line editing: newlines and tabs become spaces */
@@ -63,12 +71,48 @@ set_error(const char *msg)
     snprintf(g_edit.err, sizeof(g_edit.err), "%s", msg);
 }
 
+/* Date, weekday, day and month fields all from one day */
+static void
+fill_when(Day base)
+{
+    int y, m, d;
+    day_to_ymd(base, &y, &m, &d);
+    snprintf(g_edit.date, sizeof(g_edit.date), "%02d.%02d.%04d", d, m, y);
+    snprintf(g_edit.day, sizeof(g_edit.day), "%d", d);
+    snprintf(g_edit.month, sizeof(g_edit.month), "%d", m);
+    g_edit.weekday = day_weekday(base) - 1;
+}
+
+int
+edit_new(sqlite3 *db, int todo, Day date)
+{
+    memset(&g_edit, 0, sizeof(g_edit));
+    g_edit.is_new  = 1;
+    g_edit.kind    = todo ? KIND_TODO : KIND_ENTRY;
+    g_edit.type    = g_edit.kind;
+    g_edit.db      = db;
+    g_edit.id      = -1;
+    g_edit.todo_id = -1;
+    g_edit.prio    = 1;                         /* normal */
+    g_edit.saved_date = date;                   /* kept for recurring entries */
+    fill_when(date);
+    g_edit.open = 1;
+    g_focus     = 0;
+    return 0;
+}
+
+void
+edit_saved_item(int *is_todo, sqlite3_int64 *id, Day *date)
+{
+    *is_todo = g_edit.saved_todo;
+    *id      = g_edit.saved_id;
+    *date    = g_edit.saved_date;
+}
+
 int
 edit_open_entry(sqlite3 *db, sqlite3_int64 id)
 {
     Entry e;
-    Day   base;
-    int   y, m, d;
 
     if (store_get_entry(db, id, &e) != 0) return -1;
     memset(&g_edit, 0, sizeof(g_edit));
@@ -84,15 +128,13 @@ edit_open_entry(sqlite3 *db, sqlite3_int64 id)
     g_edit.repeat = e.recurrence;
 
     /* Fill every "when" field, so switching Repeat starts from sensible values */
-    base = e.recurrence == REC_NONE ? e.date : day_today();
-    day_to_ymd(base, &y, &m, &d);
-    snprintf(g_edit.date, sizeof(g_edit.date), "%02d.%02d.%04d", d, m, y);
-    g_edit.weekday = (e.recurrence == REC_WEEKLY ? e.weekday : day_weekday(base)) - 1;
-    snprintf(g_edit.day, sizeof(g_edit.day), "%d",
-             e.recurrence == REC_MONTHLY || e.recurrence == REC_YEARLY ? e.day : d);
-    snprintf(g_edit.month, sizeof(g_edit.month), "%d",
-             e.recurrence == REC_YEARLY ? e.month : m);
-    if (g_edit.weekday < 0 || g_edit.weekday > 6) g_edit.weekday = 0;
+    fill_when(e.recurrence == REC_NONE ? e.date : day_today());
+    if (e.recurrence == REC_WEEKLY && e.weekday >= 1 && e.weekday <= 7)
+        g_edit.weekday = e.weekday - 1;
+    if (e.recurrence == REC_MONTHLY || e.recurrence == REC_YEARLY)
+        snprintf(g_edit.day, sizeof(g_edit.day), "%d", e.day);
+    if (e.recurrence == REC_YEARLY)
+        snprintf(g_edit.month, sizeof(g_edit.month), "%d", e.month);
 
     store_entry_free(&e);
     g_edit.open = 1;
@@ -193,11 +235,22 @@ save_entry(void)
     }
     e.duration_min = (int)n;
 
-    if (store_update_entry(g_edit.db, &e) != 0) {
+    if (g_edit.is_new) {
+        e.id = store_add_entry(g_edit.db, &e);
+        if (e.id < 0) {
+            snprintf(g_edit.err, sizeof(g_edit.err), "Save failed: %s",
+                     sqlite3_errmsg(g_edit.db));
+            return -1;
+        }
+    } else if (store_update_entry(g_edit.db, &e) != 0) {
         snprintf(g_edit.err, sizeof(g_edit.err), "Save failed: %s",
                  sqlite3_errmsg(g_edit.db));
         return -1;
     }
+    g_edit.saved_todo = 0;
+    g_edit.saved_id   = e.id;
+    if (e.recurrence == REC_NONE)
+        g_edit.saved_date = e.date;
     return 0;
 }
 
@@ -211,11 +264,20 @@ save_todo(void)
     t.description = g_edit.desc;
     t.priority    = g_edit.prio + 1;
     t.done        = g_edit.status;
-    if (store_update_todo(g_edit.db, &t) != 0) {
+    if (g_edit.is_new) {
+        t.id = store_add_todo(g_edit.db, t.title, t.description, t.priority);
+        if (t.id < 0) {
+            snprintf(g_edit.err, sizeof(g_edit.err), "Save failed: %s",
+                     sqlite3_errmsg(g_edit.db));
+            return -1;
+        }
+    } else if (store_update_todo(g_edit.db, &t) != 0) {
         snprintf(g_edit.err, sizeof(g_edit.err), "Save failed: %s",
                  sqlite3_errmsg(g_edit.db));
         return -1;
     }
+    g_edit.saved_todo = 1;
+    g_edit.saved_id   = t.id;
     return 0;
 }
 
@@ -229,6 +291,8 @@ try_save(void)
         set_error("Title is empty");
         return EDIT_HANDLED;
     }
+    if (g_edit.is_new)
+        g_edit.kind = g_edit.type;
     if ((g_edit.kind == KIND_ENTRY ? save_entry() : save_todo()) != 0)
         return EDIT_HANDLED;
     g_edit.open = 0;
@@ -265,10 +329,14 @@ edit_draw(void)
     int rows = getmaxy(stdscr);
     int cols = getmaxx(stdscr);
     int w    = cols - 4 < 72 ? cols - 4 : 72;
-    int h    = g_edit.kind == KIND_ENTRY ? 11 : 10;
+    int h;
     int top, left, lc, fc, fw, r, i;
 
     fields_reset();
+    if (g_edit.is_new)
+        g_edit.kind = g_edit.type;
+    /* borders, spacing, buttons and message: 7 rows; plus the fields */
+    h = 7 + (g_edit.kind == KIND_ENTRY ? 5 : 4) + (g_edit.is_new && g_edit.kind == KIND_ENTRY);
     if (!g_edit.open) return;
     if (w < 40 || rows < h + 2) {
         set_error("Terminal too small for the form");
@@ -287,15 +355,24 @@ edit_draw(void)
     attron(COLOR_PAIR(CP_BOX_LINE));
     draw_popup_frame(top, left, h, w);
     attron(A_BOLD);
-    mvprintw(top, left + 2, " %s ", g_edit.kind == KIND_TODO ? "Edit todo"
-                                   : g_edit.repeat == REC_NONE ? "Edit entry"
-                                   : "Edit entry (all repeats)");
+    mvprintw(top, left + 2, " %s ",
+             g_edit.is_new ? (g_edit.kind == KIND_TODO ? "New todo" : "New calendar entry")
+             : g_edit.kind == KIND_TODO ? "Edit todo"
+             : g_edit.repeat == REC_NONE ? "Edit entry"
+             : "Edit entry (all repeats)");
     attroff(COLOR_PAIR(CP_BOX_LINE) | A_BOLD);
 
     r = top + 2;
     label(r, lc, "Title:");
     draw_textfield(r, fc, fw, g_edit.title, sizeof(g_edit.title), FT_TEXT, 0);
     r++;
+
+    if (g_edit.is_new) {
+        label(r, lc, "Type:");
+        draw_dropdown(r, fc, 18, type_opts, &g_edit.type,
+                      g_edit.type_buf, sizeof(g_edit.type_buf), NULL);
+        r++;
+    }
 
     if (g_edit.kind == KIND_ENTRY) {
         label(r, lc, "Repeat:");
@@ -342,10 +419,12 @@ edit_draw(void)
         draw_dropdown(r, fc, 10, prio_opts, &g_edit.prio,
                       g_edit.prio_buf, sizeof(g_edit.prio_buf), NULL);
         r++;
-        label(r, lc, "Status:");
-        draw_dropdown(r, fc, 10, status_opts, &g_edit.status,
-                      g_edit.status_buf, sizeof(g_edit.status_buf), NULL);
-        r++;
+        if (!g_edit.is_new) {
+            label(r, lc, "Status:");
+            draw_dropdown(r, fc, 10, status_opts, &g_edit.status,
+                          g_edit.status_buf, sizeof(g_edit.status_buf), NULL);
+            r++;
+        }
     }
 
     label(r, lc, "Notes:");
