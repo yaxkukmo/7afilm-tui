@@ -64,7 +64,8 @@ draw_textfield(int row, int col, int width,
         attron(COLOR_PAIR(CP_INPUT) | A_BOLD | (g_basic_colors ? A_REVERSE : 0));
     else
         attron(COLOR_PAIR(CP_INPUT));
-    tui_put_text(row, col, width, buf);
+    /* while editing show the end of a long text, where the cursor is */
+    tui_put_text(row, col, width, focused ? utf8_tail(buf, width - 1) : buf);
     if (focused)
         attroff(COLOR_PAIR(CP_INPUT) | A_BOLD | A_REVERSE);
     else
@@ -249,8 +250,7 @@ form_place_cursor(void)
     if (g_focus >= 0 && g_focus < g_nfields) {
         Field *f = &g_fields[g_focus];
         if (f->type == FT_TEXT || f->type == FT_DIGITS || f->type == FT_SPINNER) {
-            int w    = utf8_width(f->buf);
-            int cpos = w < f->width ? w : f->width - 1;
+            int cpos = utf8_width(utf8_tail(f->buf, f->width - 1));
             move(f->row, f->col + cpos);
             curs_set(1);
         } else {

@@ -40,4 +40,7 @@ int quickadd_parse(const char *s, Day today, QuickAdd *out,
 int quickadd_parse_when(const char *s, Day today, Day *date, char time[6],
                         char *err, size_t errsz);
 
+/* A time alone ("15:00", "3pm"): 1 = ok, 0 = not a time, -1 = invalid */
+int quickadd_parse_time(const char *s, char out[6]);
+
 #endif /* QUICKADD_H */

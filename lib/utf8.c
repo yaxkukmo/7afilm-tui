@@ -90,6 +90,19 @@ utf8_fit(const char *s, int cols, int *width)
     return (size_t)(p - s);
 }
 
+const char *
+utf8_tail(const char *s, int cols)
+{
+    int w = utf8_width(s);
+    while (w > cols && *s) {
+        unsigned cp;
+        int n = utf8_decode(s, &cp);
+        w -= utf8_cp_width(cp);
+        s += n;
+    }
+    return s;
+}
+
 size_t
 utf8_wrap(const char *s, int cols, size_t *next)
 {

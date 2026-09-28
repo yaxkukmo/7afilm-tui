@@ -17,7 +17,7 @@ LIBOBJS = lib/utf8.o lib/tui.o lib/form.o lib/listpopup.o lib/db.o \
 
 FILMOBJS = film/timer.o film/7afilm-tui.o
 
-ORGOBJS  = organizer/date.o organizer/store.o organizer/quickadd.o
+ORGOBJS  = organizer/date.o organizer/store.o organizer/quickadd.o organizer/edit.o
 
 all: 7afilm-tui 7aorganizer-tui
 
@@ -64,7 +64,12 @@ organizer/store.o: organizer/store.c organizer/store.h organizer/date.h lib/db.h
 organizer/quickadd.o: organizer/quickadd.c organizer/quickadd.h organizer/date.h lib/utf8.h
 	$(CC) $(CFLAGS) -c organizer/quickadd.c -o $@
 
-organizer/7aorganizer-tui.o: organizer/7aorganizer-tui.c organizer/date.h organizer/store.h \
+organizer/edit.o: organizer/edit.c organizer/edit.h organizer/date.h organizer/quickadd.h \
+                  organizer/store.h lib/form.h lib/tui.h lib/utf8.h
+	$(CC) $(CFLAGS) -c organizer/edit.c -o $@
+
+organizer/7aorganizer-tui.o: organizer/7aorganizer-tui.c organizer/date.h organizer/edit.h \
+                            organizer/quickadd.h organizer/store.h lib/inputline.h \
                             lib/db.h lib/tui.h lib/utf8.h
 	$(CC) $(CFLAGS) -c organizer/7aorganizer-tui.c -o $@
 

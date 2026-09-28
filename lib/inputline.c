@@ -45,8 +45,8 @@ inputline_draw(const InputLine *il, int row, int col, int cols)
 {
     int pw = utf8_width(il->prompt);
     int fw = cols - pw;
-    int tw = utf8_width(il->text);
-    const char *shown = il->text;
+    const char *shown;
+    int tw;
 
     if (fw < 1) return;
 
@@ -55,12 +55,8 @@ inputline_draw(const InputLine *il, int row, int col, int cols)
     attroff(COLOR_PAIR(CP_BOX) | A_BOLD);
 
     /* Long text: show its tail so the cursor end stays visible */
-    while (tw > fw - 1 && *shown) {
-        unsigned cp;
-        int n = utf8_decode(shown, &cp);
-        tw -= utf8_cp_width(cp);
-        shown += n;
-    }
+    shown = utf8_tail(il->text, fw - 1);
+    tw    = utf8_width(shown);
 
     if (!il->text[0] && il->placeholder) {
         attron(COLOR_PAIR(CP_INPUT) | A_DIM);

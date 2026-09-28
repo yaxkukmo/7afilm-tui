@@ -18,6 +18,7 @@
  *   n              quick add: "dentysta jutro 15:00" goes to the calendar,
  *                  text without a date or time becomes a todo (see quickadd.h)
  *   s              schedule the selected todo ("jutro 15:00") (Todo view)
+ *   e              edit the selected entry or todo (see edit.h)
  *   x              delete the selected item (asks y/n)
  *   q / Ctrl+Q     quit
  */
@@ -33,6 +34,7 @@
 
 #include "date.h"
 #include "db.h"
+#include "edit.h"
 #include "inputline.h"
 #include "quickadd.h"
 #include "store.h"
@@ -436,6 +438,20 @@ submit_schedule(void)
 }
 
 static void
+start_edit(void)
+{
+    const Occurrence *o = selected_occ();
+    const TodoRow    *t = selected_todo();
+    int rc = -1;
+
+    if (o)      rc = edit_open_entry(g_db, o->entry_id);
+    else if (t) rc = edit_open_todo(g_db, t->id);
+    else        return;
+    if (rc != 0)
+        snprintf(g_status, sizeof(g_status), "Could not load the item.");
+}
+
+static void
 toggle_done(void)
 {
     const TodoRow *t = selected_todo();
@@ -775,13 +791,15 @@ draw_all(void)
     } else {
         attron(COLOR_PAIR(CP_BOX) | A_DIM);
         tui_put_text(rows - 2, 2, cols - 4, g_view == VIEW_TODO
-            ? "n new  s schedule  Space done  f filter  x delete  D T views  Tab viewer  q quit"
-            : "n new  x delete  D T views  Tab viewer  q quit");
+            ? "n new  e edit  s schedule  Space done  f filter  x delete  D T views  Tab viewer  q quit"
+            : "n new  e edit  x delete  D T views  Tab viewer  q quit");
         attroff(COLOR_PAIR(CP_BOX) | A_DIM);
     }
 
-    /* Last, so the cursor stays where the prompt put it */
-    if (g_confirm_open) {
+    /* Last, so the cursor stays where the form / prompt put it */
+    if (edit_is_open()) {
+        edit_draw();
+    } else if (g_confirm_open) {
         draw_confirm_box(g_confirm_msg);
     } else if (g_input.open) {
         if (g_status[0]) {                      /* e.g. a parse error */
@@ -806,6 +824,17 @@ handle_key(int ch)
 {
     int page = getmaxy(stdscr) - 5;
     if (page < 1) page = 1;
+
+    switch (edit_key(ch)) {
+    case EDIT_IGNORED:
+        break;
+    case EDIT_SAVED:
+        snprintf(g_status, sizeof(g_status), "Saved.");
+        load_model();
+        return;
+    default:
+        return;
+    }
 
     if (g_confirm_open) {
         if (ch == 'y' || ch == 'Y') {
@@ -839,6 +868,9 @@ handle_key(int ch)
         return;
     case 's':
         start_schedule();
+        return;
+    case 'e':
+        start_edit();
         return;
     case 'q':
     case 'q' & 0x1f:

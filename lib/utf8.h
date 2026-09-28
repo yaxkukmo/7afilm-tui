@@ -22,6 +22,9 @@ int  utf8_width(const char *s);
  * unless it is NULL. */
 size_t utf8_fit(const char *s, int cols, int *width);
 
+/* Longest tail of s that fits in `cols` columns */
+const char *utf8_tail(const char *s, int cols);
+
 /* Next line of s wrapped to `cols` columns: returns its length in bytes.
  * Breaks at '\n', else after the last space that fits, else mid-word.
  * *next gets the offset where the following line starts; wrapping is

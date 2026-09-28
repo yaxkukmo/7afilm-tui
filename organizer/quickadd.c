@@ -299,3 +299,9 @@ quickadd_parse_when(const char *s, Day today, Day *date, char time[6],
     memcpy(time, qa.time, 6);
     return 1;
 }
+
+int
+quickadd_parse_time(const char *s, char out[6])
+{
+    return parse_time(s, out);
+}
