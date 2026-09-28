@@ -1,23 +1,38 @@
-# TODO - 7afilm-tui dropdowns
+# TODO
 
-## Do zrobienia
+## Przed scaleniem `shared-tui-lib` z `master`
 
-- [ ] Dodac `FT_DROPDOWN = 6`, `MAX_DROPDOWNS = 8` do stalych
-- [ ] Dodac tablice opcji: `film_options[]`, `iso_options[]`, `dev_options[]`
-- [ ] Dodac struct `DropdownMeta`
-- [ ] Dodac `iso_used_buf[8]` do `CountdownTimer`
-- [ ] Dodac globalne indeksy (`g_film_idx`, `g_iso_nom_idx`, `g_iso_used_idx`, `g_dev_idx`) i `g_dd_store[]`
-- [ ] Nowe funkcje pomocnicze: `find_option_idx`, `sync_dropdown_indices`, `sync_bufs_from_indices`, `AutoUpdatePresetName`
-- [ ] `fields_reset()` — dodac `g_dd_count = 0`
-- [ ] Nowa funkcja `draw_dropdown()`
-- [ ] `draw_timer_fields()` — zamienic Film/ISO/Developer na dropdowny, dodac wiersz "ISO used"
-- [ ] `draw_presets()` — usunac pole nazwy i przycisk Save
-- [ ] Nowa funkcja `draw_save_section()` (nazwa auto + przycisk Save na dole)
-- [ ] `draw_database_tab()` — wywolac `draw_save_section()` na koncu
-- [ ] `handle_key()` — obsluga `FT_DROPDOWN` (Up/Down cykluje opcje)
-- [ ] `OpenDatabase()` — dodac kolumne `dev_iso_used`
-- [ ] `LoadPresetIntoTimers()` — dodac `dev_iso_used`, wywolac `sync_dropdown_indices()`
-- [ ] `SavePreset()` — dodac `dev_iso_used` do zapytania
-- [ ] `main()` — wywolac `sync_bufs_from_indices()` po `InitTimers()`
-- [ ] Zaktualizowac pasek pomocy
-- [ ] `make` — kompilacja bez bledow
+- [ ] Przetestować 7afilm-tui: UTF-8 w polach tekstowych (Cfg → Name), wspólny
+      pasek zakładek, popupy bez cienia, Ctrl+Q, usuwanie presetów (Delete
+      w wyszukiwarce „Load Preset”)
+- [ ] Przetestować 7aorganizer-tui (`./7aorganizer-tui --import poc.db`, potem
+      normalne uruchomienie)
+- [ ] Zbudować i uruchomić oba programy na OpenBSD, także na konsoli wscons
+      (`-lcurses`, `get_wch`, `NCURSES_WIDECHAR`)
+
+## 7aorganizer-tui
+
+- [ ] Wielowierszowy opis: formularz edycji ma jedno pole tekstowe, więc przy
+      edycji opisu nowe linie zamieniają się na spacje
+- [ ] Wpisy cykliczne: usunięcie kasuje całą serię; brak pominięcia jednego
+      wystąpienia (np. odwołany standup) ani edycji tylko jednego terminu
+- [ ] Wyszukiwanie `/` także w opisach, nie tylko w tytułach i datach
+- [ ] Cofnięcie odhaczenia: zrobione zadanie od razu znika z dashboardu,
+      przywrócić je można tylko w F3 z filtrem „done”
+- [ ] Opcjonalnie: obsługa myszy (klikanie w przyciski i elementy listy)
+- [ ] Opcjonalnie: zakładki Help (F11) i Quit (F12) jak w 7afilm
+
+## 7afilm-tui
+
+- [ ] Stare ostrzeżenia kompilatora: wcięcia w `film/timer.c` (ParseCountdownFields)
+      i przycinanie nazwy presetu w `BuildPresetName` (`-Wformat-truncation`)
+- [ ] Migracje bazy przez `db_migrate()` (`PRAGMA user_version`) zamiast
+      sprawdzania kolumn (`db_column_exists("presets", "dev_hh")`)
+
+## Repozytorium
+
+- [ ] Przemianować repo i katalog (np. `7a-tui`), bo mieści dwie aplikacje
+- [ ] `todo-organizer.md`: zaktualizować do tego, co powstało (schemat bazy,
+      zakładki F1–F3, klawisze, formularz, quick add `a`) albo usunąć
+- [ ] `poc.db` w katalogu głównym: kopia jest w `organizer/testdata/`, oryginał
+      można usunąć
