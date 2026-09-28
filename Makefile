@@ -19,13 +19,16 @@ FILMOBJS = film/timer.o film/7afilm-tui.o
 
 ORGOBJS  = organizer/date.o organizer/store.o
 
-all: 7afilm-tui
+all: 7afilm-tui 7aorganizer-tui
 
 $(LIB): $(LIBOBJS)
 	ar rcs $@ $(LIBOBJS)
 
 7afilm-tui: $(FILMOBJS) $(LIB)
 	$(CC) $(CFLAGS) -o $@ $(FILMOBJS) $(LIB) $(LDFLAGS)
+
+7aorganizer-tui: $(ORGOBJS) organizer/7aorganizer-tui.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ $(ORGOBJS) organizer/7aorganizer-tui.o $(LIB) $(LDFLAGS)
 
 # lib/
 
@@ -55,6 +58,10 @@ organizer/date.o: organizer/date.c organizer/date.h
 organizer/store.o: organizer/store.c organizer/store.h organizer/date.h lib/db.h
 	$(CC) $(CFLAGS) -c organizer/store.c -o $@
 
+organizer/7aorganizer-tui.o: organizer/7aorganizer-tui.c organizer/date.h organizer/store.h \
+                            lib/db.h lib/tui.h lib/utf8.h
+	$(CC) $(CFLAGS) -c organizer/7aorganizer-tui.c -o $@
+
 organizer/test_store: organizer/test_store.c $(ORGOBJS) $(LIB)
 	$(CC) $(CFLAGS) -o $@ organizer/test_store.c $(ORGOBJS) $(LIB) $(LDFLAGS)
 
@@ -71,7 +78,8 @@ film/7afilm-tui.o: film/7afilm-tui.c film/timer.h lib/db.h lib/dynlist.h \
 	$(CC) $(CFLAGS) -c film/7afilm-tui.c -o $@
 
 clean:
-	rm -f 7afilm-tui $(FILMOBJS) $(ORGOBJS) organizer/test_store \
+	rm -f 7afilm-tui 7aorganizer-tui $(FILMOBJS) $(ORGOBJS) \
+	      organizer/7aorganizer-tui.o organizer/test_store \
 	      $(LIBOBJS) $(LIB)
 
 .PHONY: all check clean

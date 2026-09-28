@@ -22,6 +22,12 @@ int  utf8_width(const char *s);
  * unless it is NULL. */
 size_t utf8_fit(const char *s, int cols, int *width);
 
+/* Next line of s wrapped to `cols` columns: returns its length in bytes.
+ * Breaks at '\n', else after the last space that fits, else mid-word.
+ * *next gets the offset where the following line starts; wrapping is
+ * done when s + *next points at the terminating NUL. */
+size_t utf8_wrap(const char *s, int cols, size_t *next);
+
 /* Append cp if it fits (with the NUL) in bufsz; returns 1 on success */
 int  utf8_append(char *buf, size_t bufsz, unsigned cp);
 /* Remove the last character; returns 0 when buf was empty */

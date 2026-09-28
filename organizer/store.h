@@ -70,6 +70,8 @@ int  store_init(sqlite3 *db);
 /* Copy todos and calendar entries from a database with the poc.db
  * schema (no times, no todo links).  Returns 0, -1 on error. */
 int  store_import(sqlite3 *db, const char *path);
+/* 1 when there are no todos and no calendar entries */
+int  store_is_empty(sqlite3 *db);
 
 /* Todos */
 int           store_todos(sqlite3 *db, int filter, TodoRow **out);  /* count or -1 */

@@ -19,7 +19,7 @@
 
 chtype g_ul, g_ur, g_ll, g_lr;
 chtype g_hl, g_vl;
-chtype g_lt, g_rt, g_tt;
+chtype g_lt, g_rt, g_tt, g_bt;
 
 int  g_basic_colors = 0;
 char g_status[128]  = "";
@@ -41,7 +41,7 @@ init_box_chars(void)
                   (tty && strncmp(tty, "/dev/ttyC", 9) == 0 &&
                    getenv("FORCE_ACS") == NULL);
     if (ascii) {
-        g_ul = g_ur = g_ll = g_lr = g_lt = g_rt = g_tt = '+';
+        g_ul = g_ur = g_ll = g_lr = g_lt = g_rt = g_tt = g_bt = '+';
         g_hl = '-';
         g_vl = '|';
     } else {
@@ -49,7 +49,7 @@ init_box_chars(void)
         g_ll = ACS_LLCORNER; g_lr = ACS_LRCORNER;
         g_hl = ACS_HLINE;    g_vl = ACS_VLINE;
         g_lt = ACS_LTEE;     g_rt = ACS_RTEE;
-        g_tt = ACS_TTEE;
+        g_tt = ACS_TTEE;     g_bt = ACS_BTEE;
     }
 }
 
@@ -242,6 +242,33 @@ draw_section_title(int row, int col, int width, const char *title)
     attron(A_BOLD | COLOR_PAIR(CP_BOX));
     mvprintw(row, col + INDENT, "  %s", title);
     attroff(A_BOLD | COLOR_PAIR(CP_BOX));
+}
+
+void
+draw_confirm_box(const char *question)
+{
+    int rows = getmaxy(stdscr);
+    int cols = getmaxx(stdscr);
+    int pw   = utf8_width(question) + 6;
+    int pr, pc;
+
+    if (pw < 30) pw = 30;
+    if (pw > cols - 2) pw = cols - 2;
+    pr = (rows - 5) / 2;
+    pc = (cols - pw) / 2;
+    if (pr < 0) pr = 0;
+    if (pc < 0) pc = 0;
+
+    attron(COLOR_PAIR(CP_BUTTON));
+    draw_popup_frame(pr, pc, 5, pw);
+    attron(A_BOLD);
+    tui_put_text(pr + 1, pc + 1, pw - 2, "");
+    tui_put_text(pr + 1, pc + 3, pw - 6, question);
+    attroff(A_BOLD);
+    tui_put_text(pr + 2, pc + 1, pw - 2, "");
+    tui_put_text(pr + 3, pc + 1, pw - 2, "   y = yes    n / Esc = no");
+    attroff(COLOR_PAIR(CP_BUTTON));
+    curs_set(0);
 }
 
 void

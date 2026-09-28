@@ -90,6 +90,34 @@ utf8_fit(const char *s, int cols, int *width)
     return (size_t)(p - s);
 }
 
+size_t
+utf8_wrap(const char *s, int cols, size_t *next)
+{
+    const char *p   = s;
+    const char *brk = NULL;     /* last space that fits */
+    unsigned cp;
+    int n, w = 0;
+
+    if (cols < 1) cols = 1;
+    while (*p && *p != '\n') {
+        n = utf8_decode(p, &cp);
+        if (w + utf8_cp_width(cp) > cols) {
+            if (brk) {
+                *next = (size_t)(brk + 1 - s);
+                return (size_t)(brk - s);
+            }
+            if (p == s) p += n;             /* always make progress */
+            *next = (size_t)(p - s);
+            return (size_t)(p - s);
+        }
+        if (cp == ' ') brk = p;
+        w += utf8_cp_width(cp);
+        p += n;
+    }
+    *next = (size_t)(p - s) + (*p == '\n');
+    return (size_t)(p - s);
+}
+
 int
 utf8_append(char *buf, size_t bufsz, unsigned cp)
 {

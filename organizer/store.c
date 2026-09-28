@@ -169,6 +169,20 @@ store_import(sqlite3 *db, const char *path)
     return rc == SQLITE_OK ? 0 : -1;
 }
 
+int
+store_is_empty(sqlite3 *db)
+{
+    sqlite3_stmt *s;
+    int empty = 0;
+    if (sqlite3_prepare_v2(db,
+            "SELECT NOT EXISTS (SELECT 1 FROM todos)"
+            "   AND NOT EXISTS (SELECT 1 FROM calendar_entries);",
+            -1, &s, NULL) == SQLITE_OK && sqlite3_step(s) == SQLITE_ROW)
+        empty = sqlite3_column_int(s, 0);
+    sqlite3_finalize(s);
+    return empty;
+}
+
 /* ------------------------------------------------------------------ */
 /* Todos                                                               */
 /* ------------------------------------------------------------------ */

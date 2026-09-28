@@ -34,7 +34,7 @@
 /* Box-drawing characters (ACS or ASCII fallback) */
 extern chtype g_ul, g_ur, g_ll, g_lr; /* corners                     */
 extern chtype g_hl, g_vl;             /* horizontal / vertical line  */
-extern chtype g_lt, g_rt, g_tt;       /* T-junctions                 */
+extern chtype g_lt, g_rt, g_tt, g_bt; /* T-junctions                 */
 
 /* 8-color terminal (e.g. the wscons console): light text on black and
  * focused / selected elements shown in reverse video.                  */
@@ -57,6 +57,8 @@ void draw_h_separator(int row, int col, int width);
 void draw_box_sides(int row, int col, int width);
 void draw_popup_frame(int top, int left, int height, int width);
 void draw_section_title(int row, int col, int width, const char *title);
+/* Centered yes/no question box; the app handles y / n / Esc */
+void draw_confirm_box(const char *question);
 void draw_label(int row, const char *text);
 int  field_col(void);
 
