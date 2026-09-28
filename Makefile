@@ -17,6 +17,8 @@ LIBOBJS = lib/utf8.o lib/tui.o lib/form.o lib/listpopup.o lib/db.o \
 
 FILMOBJS = film/timer.o film/7afilm-tui.o
 
+ORGOBJS  = organizer/date.o organizer/store.o
+
 all: 7afilm-tui
 
 $(LIB): $(LIBOBJS)
@@ -45,6 +47,20 @@ lib/db.o: lib/db.c lib/db.h
 lib/dynlist.o: lib/dynlist.c lib/dynlist.h
 	$(CC) $(CFLAGS) -c lib/dynlist.c -o $@
 
+# organizer/
+
+organizer/date.o: organizer/date.c organizer/date.h
+	$(CC) $(CFLAGS) -c organizer/date.c -o $@
+
+organizer/store.o: organizer/store.c organizer/store.h organizer/date.h lib/db.h
+	$(CC) $(CFLAGS) -c organizer/store.c -o $@
+
+organizer/test_store: organizer/test_store.c $(ORGOBJS) $(LIB)
+	$(CC) $(CFLAGS) -o $@ organizer/test_store.c $(ORGOBJS) $(LIB) $(LDFLAGS)
+
+check: organizer/test_store
+	./organizer/test_store organizer/testdata/poc.db
+
 # film/
 
 film/timer.o: film/timer.c film/timer.h lib/tui.h
@@ -55,6 +71,7 @@ film/7afilm-tui.o: film/7afilm-tui.c film/timer.h lib/db.h lib/dynlist.h \
 	$(CC) $(CFLAGS) -c film/7afilm-tui.c -o $@
 
 clean:
-	rm -f 7afilm-tui $(FILMOBJS) $(LIBOBJS) $(LIB)
+	rm -f 7afilm-tui $(FILMOBJS) $(ORGOBJS) organizer/test_store \
+	      $(LIBOBJS) $(LIB)
 
-.PHONY: all clean
+.PHONY: all check clean

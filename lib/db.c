@@ -27,6 +27,38 @@ db_open(const char *progname, const char *file)
 }
 
 int
+db_migrate(sqlite3 *db, const char *const *steps, int nsteps)
+{
+    sqlite3_stmt *stmt;
+    int version = 0;
+    char sql[64];
+
+    if (sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, NULL) != SQLITE_OK)
+        return -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        version = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
+
+    for (; version < nsteps; version++) {
+        snprintf(sql, sizeof(sql), "PRAGMA user_version=%d;", version + 1);
+        if (sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL) != SQLITE_OK)
+            return -1;
+        if (sqlite3_exec(db, steps[version], NULL, NULL, NULL) != SQLITE_OK ||
+            sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
+            /* keep the step's error message, not ROLLBACK's */
+            char err[256];
+            snprintf(err, sizeof(err), "%s", sqlite3_errmsg(db));
+            sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+            fprintf(stderr, "schema migration %d failed: %s\n", version + 1, err);
+            return -1;
+        }
+        if (sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL) != SQLITE_OK)
+            return -1;
+    }
+    return 0;
+}
+
+int
 db_table_exists(sqlite3 *db, const char *name)
 {
     sqlite3_stmt *stmt;

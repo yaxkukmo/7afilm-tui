@@ -12,6 +12,12 @@
  * foreign keys enabled.  Prints an error and exits on failure. */
 sqlite3    *db_open(const char *progname, const char *file);
 
+/* Bring the schema up to date: runs steps[user_version .. nsteps-1],
+ * each in its own transaction together with the new user_version.
+ * Call before curses starts: on failure the error goes to stderr and
+ * -1 is returned. */
+int         db_migrate(sqlite3 *db, const char *const *steps, int nsteps);
+
 int         db_table_exists(sqlite3 *db, const char *name);
 int         db_column_exists(sqlite3 *db, const char *table, const char *col);
 
