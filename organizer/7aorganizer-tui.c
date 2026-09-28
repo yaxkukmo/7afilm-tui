@@ -9,8 +9,9 @@
  *                                    empty)
  *
  * Keys:
- *   D / T          Dashboard / Todo view
+ *   D / C / T      Dashboard / Calendar (week) / Todo view
  *   Up / Down      move in the list (j / k too), or scroll the viewer
+ *   Calendar:      Left / Right day (h / l), PgUp / PgDn week, Home today
  *   PgUp / PgDn    page;  Home / End  first / last item
  *   Tab            switch focus: list <-> viewer;  Esc back to the list
  *   Space          toggle done (Todo view)
@@ -45,7 +46,8 @@
 
 #define VIEW_DASHBOARD 0
 #define VIEW_TODO      1
-#define VIEW_COUNT     2
+#define VIEW_CALENDAR  2
+#define VIEW_COUNT     3
 
 #define ROW_HEADER 0   /* group title                                  */
 #define ROW_EMPTY  1   /* placeholder / spacer, not selectable         */
@@ -58,6 +60,7 @@
 #define WEEK_DAYS      7   /* the dashboard covers today + 6 days */
 
 #define MIN_VIEWER_COLS 70 /* narrower terminals show the list only */
+#define MIN_VIEWER_COLS_CAL 110 /* the week needs the room first */
 
 typedef struct {
     int         kind;    /* ROW_* */
@@ -73,7 +76,7 @@ static const char *const weekday_long[8] = {
     "", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
     "Saturday", "Sunday"
 };
-static const char *const view_names[VIEW_COUNT] = { "Dashboard", "Todo" };
+static const char *const view_names[VIEW_COUNT] = { "Dashboard", "Todo", "Calendar" };
 static const char *const filter_names[3]        = { "all", "open", "done" };
 static const char *const priority_names[4]      = { "", "high", "normal", "low" };
 
@@ -101,6 +104,11 @@ static int  g_nrows    = 0;
 static int  g_rows_cap = 0;
 static int  g_sel[VIEW_COUNT];         /* selected row, -1 = none */
 static int  g_scroll[VIEW_COUNT];
+
+/* Calendar view: the selected day (its week is shown) and item in it */
+static Day  g_cal_day;
+static int  g_cal_idx;
+static int  g_cal_first[7], g_cal_count[7];   /* g_occ range per weekday */
 
 /* Pending y/n question */
 static int           g_confirm_open = 0;
@@ -144,7 +152,8 @@ viewer_split(void)
 {
     int cols = getmaxx(stdscr);
     int vw   = cols / 3;
-    if (cols < MIN_VIEWER_COLS) return 0;
+    if (cols < (g_view == VIEW_CALENDAR ? MIN_VIEWER_COLS_CAL : MIN_VIEWER_COLS))
+        return 0;
     if (vw < 26) vw = 26;
     if (vw > 50) vw = 50;
     return cols - vw - 1;
@@ -212,6 +221,31 @@ build_todo_rows(void)
                                                             : "no todos");
 }
 
+/* Monday of the week containing day */
+static Day
+week_start(Day day)
+{
+    return day - (day_weekday(day) - 1);
+}
+
+static void
+build_calendar_days(void)
+{
+    Day week = week_start(g_cal_day);
+    int i, d;
+
+    memset(g_cal_count, 0, sizeof(g_cal_count));
+    for (i = g_nocc - 1; i >= 0; i--) {         /* sorted by date */
+        d = (int)(g_occ[i].date - week);
+        if (d < 0 || d > 6) continue;
+        g_cal_first[d] = i;
+        g_cal_count[d]++;
+    }
+    d = (int)(g_cal_day - week);
+    if (g_cal_idx >= g_cal_count[d]) g_cal_idx = g_cal_count[d] - 1;
+    if (g_cal_idx < 0)               g_cal_idx = 0;
+}
+
 static int
 selectable(int r)
 {
@@ -255,6 +289,14 @@ load_model(void)
                      sqlite3_errmsg(g_db));
         g_nocc = n < 0 ? 0 : n;
         build_dashboard_rows();
+    } else if (g_view == VIEW_CALENDAR) {
+        Day week = week_start(g_cal_day);
+        n = store_occurrences(g_db, week, week + 6, &g_occ);
+        if (n < 0)
+            snprintf(g_status, sizeof(g_status), "Database error: %s",
+                     sqlite3_errmsg(g_db));
+        g_nocc = n < 0 ? 0 : n;
+        build_calendar_days();
     } else {
         n = store_todos(g_db, g_todo_filter, &g_todos);
         if (n < 0)
@@ -288,6 +330,11 @@ static const Occurrence *
 selected_occ(void)
 {
     int r = g_sel[g_view];
+
+    if (g_view == VIEW_CALENDAR) {
+        int d = (int)(g_cal_day - week_start(g_cal_day));
+        return g_cal_idx < g_cal_count[d] ? &g_occ[g_cal_first[d] + g_cal_idx] : NULL;
+    }
     return (selectable(r) && g_rows[r].kind == ROW_OCC) ? &g_occ[g_rows[r].idx] : NULL;
 }
 
@@ -574,6 +621,104 @@ draw_list(int top, int x, int w, int h)
 }
 
 /* ------------------------------------------------------------------ */
+/* Drawing: calendar week                                              */
+/* ------------------------------------------------------------------ */
+
+static void
+draw_calendar(int top, int x, int w, int h)
+{
+    Day week = week_start(g_cal_day);
+    int cw   = (w - 6) / 7;           /* 6 dividers between 7 days */
+    int vis  = h - 2;                 /* item rows under the day header */
+    int d, i;
+
+    if (cw < 6 || vis < 1) {
+        attron(COLOR_PAIR(CP_BOX) | A_DIM);
+        tui_put_text(top, x, w, "Too narrow for the week view.");
+        attroff(COLOR_PAIR(CP_BOX) | A_DIM);
+        return;
+    }
+
+    for (d = 0; d < 7; d++) {
+        Day    day   = week + d;
+        int    cx    = x + d * (cw + 1);
+        int    sel   = day == g_cal_day;
+        int    n     = g_cal_count[d];
+        int    first = g_cal_first[d];
+        int    skip  = 0, shown;
+        int    yy, m, dd;
+        char   buf[400];
+        attr_t attr;
+
+        /* Day header: today bold, selected day reversed */
+        day_to_ymd(day, &yy, &m, &dd);
+        snprintf(buf, sizeof(buf), "%s %02d.%02d%s", weekday_short[day_weekday(day)],
+                 dd, m, day == g_today ? " *" : "");
+        attr = (day == g_today ? A_BOLD : 0) | (sel ? A_REVERSE : 0);
+        attron(COLOR_PAIR(CP_BOX) | attr);
+        tui_put_text(top, cx, cw, buf);
+        attroff(COLOR_PAIR(CP_BOX) | attr);
+
+        attron(COLOR_PAIR(CP_BOX_LINE));
+        mvhline(top + 1, cx, g_hl, cw);
+        if (d < 6)
+            mvvline(top, cx + cw, g_vl, h);
+        attroff(COLOR_PAIR(CP_BOX_LINE));
+
+        /* Keep the selected item visible; "+N" on the last row when cut */
+        if (sel && g_cal_idx >= vis - (n > vis))
+            skip = g_cal_idx - (vis - 1) + (g_cal_idx < n - 1);
+        shown = n - skip;
+        if (shown > vis) shown = vis - 1;
+
+        for (i = 0; i < shown; i++) {
+            const Occurrence *o = &g_occ[first + skip + i];
+            int is_sel = sel && skip + i == g_cal_idx;
+            snprintf(buf, sizeof(buf), "%s%s%s", o->time, o->time[0] ? " " : "", o->title);
+            attr = is_sel ? A_REVERSE | (g_viewer_focus ? 0 : A_BOLD) : 0;
+            attron(COLOR_PAIR(CP_BOX) | attr);
+            tui_put_text(top + 2 + i, cx, cw, buf);
+            attroff(COLOR_PAIR(CP_BOX) | attr);
+        }
+        if (skip + shown < n) {
+            snprintf(buf, sizeof(buf), "+%d more", n - skip - shown);
+            attron(COLOR_PAIR(CP_BOX) | A_DIM);
+            tui_put_text(top + 2 + shown, cx, cw, buf);
+            attroff(COLOR_PAIR(CP_BOX) | A_DIM);
+        }
+        if (skip > 0) {
+            attron(COLOR_PAIR(CP_BOX_LINE));
+            mvaddch(top + 1, cx + cw - 1, ACS_UARROW);
+            attroff(COLOR_PAIR(CP_BOX_LINE));
+        }
+    }
+}
+
+/* Select another day; loads its week when it changes */
+static void
+cal_move_day(long delta)
+{
+    Day old_week = week_start(g_cal_day);
+
+    g_cal_day      += delta;
+    g_cal_idx       = 0;
+    g_viewer_scroll = 0;
+    if (week_start(g_cal_day) != old_week) load_model();
+    else                                   build_calendar_days();
+}
+
+static void
+cal_move_item(int delta)
+{
+    int n = g_cal_count[g_cal_day - week_start(g_cal_day)];
+
+    g_cal_idx += delta;
+    if (g_cal_idx >= n) g_cal_idx = n - 1;
+    if (g_cal_idx < 0)  g_cal_idx = 0;
+    g_viewer_scroll = 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Drawing: viewer                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -772,12 +917,23 @@ draw_all(void)
     attroff(COLOR_PAIR(CP_BOX_LINE));
 
     /* Panes */
-    if (g_view == VIEW_TODO)
+    if (g_view == VIEW_TODO) {
         snprintf(title, sizeof(title), "Todo: %s", filter_names[g_todo_filter]);
-    else
+    } else if (g_view == VIEW_CALENDAR) {
+        Day ws = week_start(g_cal_day);
+        int y1, m1, d1, y2, m2, d2;
+        day_to_ymd(ws, &y1, &m1, &d1);
+        day_to_ymd(ws + 6, &y2, &m2, &d2);
+        snprintf(title, sizeof(title), "Calendar: %02d.%02d - %02d.%02d.%04d",
+                 d1, m1, d2, m2, y2);
+    } else {
         snprintf(title, sizeof(title), "%s", view_names[g_view]);
+    }
     draw_title(2, title, !g_viewer_focus);
-    draw_list(1, 1, right - 1, body_h);
+    if (g_view == VIEW_CALENDAR)
+        draw_calendar(1, 1, right - 1, body_h);
+    else
+        draw_list(1, 1, right - 1, body_h);
     if (split) {
         draw_title(split + 2, "Viewer", g_viewer_focus);
         draw_viewer(1, split + 2, cols - split - 4, body_h);
@@ -790,9 +946,12 @@ draw_all(void)
         attroff(COLOR_PAIR(CP_BOX) | A_BOLD);
     } else {
         attron(COLOR_PAIR(CP_BOX) | A_DIM);
-        tui_put_text(rows - 2, 2, cols - 4, g_view == VIEW_TODO
-            ? "n new  e edit  s schedule  Space done  f filter  x delete  D T views  Tab viewer  q quit"
-            : "n new  e edit  x delete  D T views  Tab viewer  q quit");
+        tui_put_text(rows - 2, 2, cols - 4,
+            g_view == VIEW_TODO
+            ? "n new  e edit  s schedule  Space done  f filter  x delete  D C T views  Tab viewer  q quit"
+            : g_view == VIEW_CALENDAR
+            ? "arrows day/item  PgUp/PgDn week  Home today  n new  e edit  x delete  D C T views  q quit"
+            : "n new  e edit  x delete  D C T views  Tab viewer  q quit");
         attroff(COLOR_PAIR(CP_BOX) | A_DIM);
     }
 
@@ -882,6 +1041,9 @@ handle_key(int ch)
     case 'T': case 't':
         switch_view(VIEW_TODO);
         return;
+    case 'C': case 'c':
+        switch_view(VIEW_CALENDAR);
+        return;
     case '\t':
         if (viewer_split()) g_viewer_focus = !g_viewer_focus;
         return;
@@ -913,6 +1075,19 @@ handle_key(int ch)
         if (ch == KEY_END)               g_viewer_scroll = max;
         if (g_viewer_scroll > max) g_viewer_scroll = max;
         if (g_viewer_scroll < 0)   g_viewer_scroll = 0;
+        return;
+    }
+
+    if (g_view == VIEW_CALENDAR) {
+        switch (ch) {
+        case KEY_LEFT:  case 'h': cal_move_day(-1);  break;
+        case KEY_RIGHT: case 'l': cal_move_day(+1);  break;
+        case KEY_UP:    case 'k': cal_move_item(-1); break;
+        case KEY_DOWN:  case 'j': cal_move_item(+1); break;
+        case KEY_PPAGE:           cal_move_day(-7);  break;
+        case KEY_NPAGE:           cal_move_day(+7);  break;
+        case KEY_HOME:            cal_move_day(day_today() - g_cal_day); break;
+        }
         return;
     }
 
@@ -977,6 +1152,7 @@ main(int argc, char **argv)
 
     tui_init();
     timeout(250);   /* wake up for resizes and the date changing */
+    g_cal_day = day_today();
     load_model();
     draw_all();
 
