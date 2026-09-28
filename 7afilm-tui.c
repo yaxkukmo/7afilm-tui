@@ -185,6 +185,9 @@ static Field      g_fields[MAX_FIELDS];
 static int        g_nfields = 0;
 static int        g_focus   = 0;
 static int        g_focus_stale = 0; /* g_fields still holds the previous tab */
+/* 8-color terminal (e.g. the wscons console): light text on black and
+ * focused / selected elements shown in reverse video.                  */
+static int        g_basic_colors = 0;
 
 static int        g_tab     = TAB_TIMER;
 static int        g_want_quit = 0;
@@ -875,14 +878,14 @@ draw_textfield(int row, int col, int width,
     int i;
 
     if (focused)
-        attron(COLOR_PAIR(CP_INPUT) | A_BOLD);
+        attron(COLOR_PAIR(CP_INPUT) | A_BOLD | (g_basic_colors ? A_REVERSE : 0));
     else
         attron(COLOR_PAIR(CP_INPUT));
     move(row, col);
     for (i = 0; i < width; i++)
         addch(i < len ? (unsigned char)buf[i] : ' ');
     if (focused)
-        attroff(COLOR_PAIR(CP_INPUT) | A_BOLD);
+        attroff(COLOR_PAIR(CP_INPUT) | A_BOLD | A_REVERSE);
     else
         attroff(COLOR_PAIR(CP_INPUT));
     return idx;
@@ -960,7 +963,7 @@ draw_dropdown(int row, int col, int width,
     len     = (int)strlen(val);
 
     if (focused)
-        attron(COLOR_PAIR(CP_INPUT) | A_BOLD);
+        attron(COLOR_PAIR(CP_INPUT) | A_BOLD | (g_basic_colors ? A_REVERSE : 0));
     else
         attron(COLOR_PAIR(CP_INPUT));
     move(row, col);
@@ -969,7 +972,7 @@ draw_dropdown(int row, int col, int width,
     addch(' ');
     addch(ACS_DARROW);
     if (focused)
-        attroff(COLOR_PAIR(CP_INPUT) | A_BOLD);
+        attroff(COLOR_PAIR(CP_INPUT) | A_BOLD | A_REVERSE);
     else
         attroff(COLOR_PAIR(CP_INPUT));
     return idx;
@@ -1227,9 +1230,9 @@ draw_tab_chrome(int row, int cols)
             mvaddch(row, col,         g_vl);
             mvaddch(row, col + w - 1, g_vl);
             attroff(COLOR_PAIR(CP_BOX_LINE));
-            attron(A_BOLD | COLOR_PAIR(CP_BOX));
+            attron(A_BOLD | COLOR_PAIR(CP_BOX) | (g_basic_colors ? A_REVERSE : 0));
             mvprintw(row, col + 1, "%s", tab_names[t]);
-            attroff(A_BOLD | COLOR_PAIR(CP_BOX));
+            attroff(A_BOLD | COLOR_PAIR(CP_BOX) | A_REVERSE);
             attron(COLOR_PAIR(CP_BOX_LINE));
             mvaddch(row - 1, col,         g_tt);
             mvaddch(row - 1, col + w - 1, g_tt);
@@ -2801,11 +2804,16 @@ main(void)
             init_pair(CP_PROGRESS,   COLOR_BLACK, COLOR_PROG_GREEN);
             init_pair(CP_ALARM,      COLOR_WHITE, COLOR_RED);
         } else {
-            init_pair(CP_BOX,        -1, COLOR_CYAN);
-            init_pair(CP_BOX_LINE,   COLOR_YELLOW, -1);
-            init_pair(CP_BOX_BORDER, COLOR_CYAN, COLOR_WHITE);
-            init_pair(CP_BG,         -1, COLOR_WHITE);
-            init_pair(CP_INPUT,      COLOR_YELLOW, COLOR_CYAN);
+            /* 8-color terminals (e.g. the wscons console): light text
+             * on black everywhere, with explicit colors - the default
+             * ones are unknown.  Input fields are yellow; the focused
+             * one is drawn in reverse video.                           */
+            g_basic_colors = 1;
+            init_pair(CP_BOX,        COLOR_WHITE, COLOR_BLACK);
+            init_pair(CP_BOX_LINE,   COLOR_YELLOW, COLOR_BLACK);
+            init_pair(CP_BOX_BORDER, COLOR_WHITE, COLOR_BLACK);
+            init_pair(CP_BG,         COLOR_WHITE, COLOR_BLACK);
+            init_pair(CP_INPUT,      COLOR_YELLOW, COLOR_BLACK);
             init_pair(CP_PROGRESS,   COLOR_BLACK, COLOR_GREEN);
             init_pair(CP_ALARM,      COLOR_WHITE, COLOR_RED);
         }
