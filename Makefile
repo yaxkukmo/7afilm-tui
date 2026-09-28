@@ -7,41 +7,54 @@ CURSES_CFLAGS != pkg-config --cflags ncursesw 2>/dev/null || true
 CURSES_LIBS   != pkg-config --libs   ncursesw 2>/dev/null || echo "-lcurses"
 
 CC      = cc
-CFLAGS  = -std=c99 -Wall -Wextra -O2 $(SQLITE_CFLAGS) $(CURSES_CFLAGS)
+CFLAGS  = -std=c99 -Wall -Wextra -O2 -Ilib $(SQLITE_CFLAGS) $(CURSES_CFLAGS)
 LDFLAGS = $(SQLITE_LIBS) $(CURSES_LIBS) -lm
 
-OBJS = utf8.o tui.o form.o listpopup.o db.o dynlist.o timer.o 7afilm-tui.o
+# Code shared by the 7a TUI apps
+LIB     = lib/lib7a.a
+LIBOBJS = lib/utf8.o lib/tui.o lib/form.o lib/listpopup.o lib/db.o \
+          lib/dynlist.o
+
+FILMOBJS = film/timer.o film/7afilm-tui.o
 
 all: 7afilm-tui
 
-7afilm-tui: $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
+$(LIB): $(LIBOBJS)
+	ar rcs $@ $(LIBOBJS)
 
-utf8.o: utf8.c utf8.h
-	$(CC) $(CFLAGS) -c utf8.c
+7afilm-tui: $(FILMOBJS) $(LIB)
+	$(CC) $(CFLAGS) -o $@ $(FILMOBJS) $(LIB) $(LDFLAGS)
 
-tui.o: tui.c tui.h utf8.h
-	$(CC) $(CFLAGS) -c tui.c
+# lib/
 
-form.o: form.c form.h tui.h utf8.h
-	$(CC) $(CFLAGS) -c form.c
+lib/utf8.o: lib/utf8.c lib/utf8.h
+	$(CC) $(CFLAGS) -c lib/utf8.c -o $@
 
-listpopup.o: listpopup.c listpopup.h form.h tui.h utf8.h
-	$(CC) $(CFLAGS) -c listpopup.c
+lib/tui.o: lib/tui.c lib/tui.h lib/utf8.h
+	$(CC) $(CFLAGS) -c lib/tui.c -o $@
 
-db.o: db.c db.h
-	$(CC) $(CFLAGS) -c db.c
+lib/form.o: lib/form.c lib/form.h lib/tui.h lib/utf8.h
+	$(CC) $(CFLAGS) -c lib/form.c -o $@
 
-dynlist.o: dynlist.c dynlist.h
-	$(CC) $(CFLAGS) -c dynlist.c
+lib/listpopup.o: lib/listpopup.c lib/listpopup.h lib/form.h lib/tui.h lib/utf8.h
+	$(CC) $(CFLAGS) -c lib/listpopup.c -o $@
 
-timer.o: timer.c timer.h tui.h
-	$(CC) $(CFLAGS) -c timer.c
+lib/db.o: lib/db.c lib/db.h
+	$(CC) $(CFLAGS) -c lib/db.c -o $@
 
-7afilm-tui.o: 7afilm-tui.c db.h dynlist.h form.h listpopup.h timer.h tui.h
-	$(CC) $(CFLAGS) -c 7afilm-tui.c
+lib/dynlist.o: lib/dynlist.c lib/dynlist.h
+	$(CC) $(CFLAGS) -c lib/dynlist.c -o $@
+
+# film/
+
+film/timer.o: film/timer.c film/timer.h lib/tui.h
+	$(CC) $(CFLAGS) -c film/timer.c -o $@
+
+film/7afilm-tui.o: film/7afilm-tui.c film/timer.h lib/db.h lib/dynlist.h \
+                   lib/form.h lib/listpopup.h lib/tui.h
+	$(CC) $(CFLAGS) -c film/7afilm-tui.c -o $@
 
 clean:
-	rm -f 7afilm-tui $(OBJS)
+	rm -f 7afilm-tui $(FILMOBJS) $(LIBOBJS) $(LIB)
 
 .PHONY: all clean
