@@ -17,6 +17,8 @@ sqlite3    *db_open(const char *progname, const char *file);
  * Call before curses starts: on failure the error goes to stderr and
  * -1 is returned. */
 int         db_migrate(sqlite3 *db, const char *const *steps, int nsteps);
+/* PRAGMA user_version, 0 for a new or never migrated database */
+int         db_user_version(sqlite3 *db);
 
 int         db_table_exists(sqlite3 *db, const char *name);
 int         db_column_exists(sqlite3 *db, const char *table, const char *col);

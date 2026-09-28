@@ -168,6 +168,42 @@ static void BuildPresetName(char *out, size_t outsz, const char *film,
 /* Database                                                            */
 /* ------------------------------------------------------------------ */
 
+#define OPTIONS_TABLE \
+    " (" \
+    " id INTEGER PRIMARY KEY AUTOINCREMENT," \
+    " category TEXT NOT NULL," \
+    " value TEXT NOT NULL," \
+    " UNIQUE(category, value)" \
+    ");"
+
+#define PRESETS_TABLE \
+    " (" \
+    " id           INTEGER PRIMARY KEY AUTOINCREMENT," \
+    " name         TEXT NOT NULL COLLATE NOCASE UNIQUE," \
+    " film_id      INTEGER REFERENCES options(id) ON DELETE SET NULL," \
+    " iso_id       INTEGER REFERENCES options(id) ON DELETE SET NULL," \
+    " iso_used_id  INTEGER REFERENCES options(id) ON DELETE SET NULL," \
+    " developer_id INTEGER REFERENCES options(id) ON DELETE SET NULL," \
+    " dilution_id  INTEGER REFERENCES options(id) ON DELETE SET NULL," \
+    " dev_time     INTEGER NOT NULL DEFAULT 0," \
+    " dev_every    INTEGER NOT NULL DEFAULT 0," \
+    " dev_for      INTEGER NOT NULL DEFAULT 10," \
+    " stop_time    INTEGER NOT NULL DEFAULT 0," \
+    " fix_time     INTEGER NOT NULL DEFAULT 0," \
+    " fix_every    INTEGER NOT NULL DEFAULT 0," \
+    " fix_for      INTEGER NOT NULL DEFAULT 10" \
+    ");"
+
+/* Schema steps for db_migrate(); append new ones, never change old ones.
+ * Step 1 uses IF NOT EXISTS because databases made before versioning
+ * already have these tables. */
+static const char *const film_migrations[] = {
+    "CREATE TABLE IF NOT EXISTS options" OPTIONS_TABLE
+    "CREATE TABLE IF NOT EXISTS presets" PRESETS_TABLE,
+};
+
+/* Presets with separate hh/mm/ss text columns and names instead of
+ * option ids, from before the options table was used for presets */
 static void
 MigrateFromOldSchema(void)
 {
@@ -177,23 +213,7 @@ MigrateFromOldSchema(void)
         " WHERE dev_dilution != '' AND dev_dilution IS NOT NULL;",
         NULL, NULL, NULL);
 
-    sqlite3_exec(g_db,
-        "CREATE TABLE presets_new ("
-        " id           INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " name         TEXT NOT NULL COLLATE NOCASE UNIQUE,"
-        " film_id      INTEGER REFERENCES options(id) ON DELETE SET NULL,"
-        " iso_id       INTEGER REFERENCES options(id) ON DELETE SET NULL,"
-        " iso_used_id  INTEGER REFERENCES options(id) ON DELETE SET NULL,"
-        " developer_id INTEGER REFERENCES options(id) ON DELETE SET NULL,"
-        " dilution_id  INTEGER REFERENCES options(id) ON DELETE SET NULL,"
-        " dev_time     INTEGER NOT NULL DEFAULT 0,"
-        " dev_every    INTEGER NOT NULL DEFAULT 0,"
-        " dev_for      INTEGER NOT NULL DEFAULT 10,"
-        " stop_time    INTEGER NOT NULL DEFAULT 0,"
-        " fix_time     INTEGER NOT NULL DEFAULT 0,"
-        " fix_every    INTEGER NOT NULL DEFAULT 0,"
-        " fix_for      INTEGER NOT NULL DEFAULT 10"
-        ");", NULL, NULL, NULL);
+    sqlite3_exec(g_db, "CREATE TABLE presets_new" PRESETS_TABLE, NULL, NULL, NULL);
 
     sqlite3_exec(g_db,
         "INSERT OR IGNORE INTO presets_new"
@@ -252,47 +272,41 @@ UpsertOption(const char *category, const char *value)
     return id;
 }
 
+/* Layouts from before PRAGMA user_version was set, recognised by
+ * their tables and columns */
 static void
-OpenDatabase(void)
+UpgradeUnversioned(void)
 {
-    g_db = db_open("7afilm-tui", "film.db");
+    int user_lists = db_table_exists(g_db, "user_lists");
+    int old_presets = db_column_exists(g_db, "presets", "dev_hh");
 
-    sqlite3_exec(g_db,
-        "CREATE TABLE IF NOT EXISTS options ("
-        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " category TEXT NOT NULL,"
-        " value TEXT NOT NULL,"
-        " UNIQUE(category, value)"
-        ");", NULL, NULL, NULL);
-
-    if (db_table_exists(g_db, "user_lists")) {
+    if (!user_lists && !old_presets)
+        return;
+    sqlite3_exec(g_db, "BEGIN;", NULL, NULL, NULL);
+    sqlite3_exec(g_db, "CREATE TABLE IF NOT EXISTS options" OPTIONS_TABLE,
+                 NULL, NULL, NULL);
+    if (user_lists) {
         sqlite3_exec(g_db,
             "INSERT OR IGNORE INTO options(category, value)"
             " SELECT category, item FROM user_lists;",
             NULL, NULL, NULL);
         sqlite3_exec(g_db, "DROP TABLE user_lists;", NULL, NULL, NULL);
     }
-
-    if (db_column_exists(g_db, "presets", "dev_hh"))
+    if (old_presets)
         MigrateFromOldSchema();
+    sqlite3_exec(g_db, "COMMIT;", NULL, NULL, NULL);
+}
 
-    sqlite3_exec(g_db,
-        "CREATE TABLE IF NOT EXISTS presets ("
-        " id           INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " name         TEXT NOT NULL COLLATE NOCASE UNIQUE,"
-        " film_id      INTEGER REFERENCES options(id) ON DELETE SET NULL,"
-        " iso_id       INTEGER REFERENCES options(id) ON DELETE SET NULL,"
-        " iso_used_id  INTEGER REFERENCES options(id) ON DELETE SET NULL,"
-        " developer_id INTEGER REFERENCES options(id) ON DELETE SET NULL,"
-        " dilution_id  INTEGER REFERENCES options(id) ON DELETE SET NULL,"
-        " dev_time     INTEGER NOT NULL DEFAULT 0,"
-        " dev_every    INTEGER NOT NULL DEFAULT 0,"
-        " dev_for      INTEGER NOT NULL DEFAULT 10,"
-        " stop_time    INTEGER NOT NULL DEFAULT 0,"
-        " fix_time     INTEGER NOT NULL DEFAULT 0,"
-        " fix_every    INTEGER NOT NULL DEFAULT 0,"
-        " fix_for      INTEGER NOT NULL DEFAULT 10"
-        ");", NULL, NULL, NULL);
+static void
+OpenDatabase(void)
+{
+    g_db = db_open("7afilm-tui", "film.db");
+
+    if (db_user_version(g_db) == 0)
+        UpgradeUnversioned();
+    if (db_migrate(g_db, film_migrations,
+                   (int)(sizeof(film_migrations) / sizeof(film_migrations[0]))) != 0)
+        exit(1);
 }
 
 static void

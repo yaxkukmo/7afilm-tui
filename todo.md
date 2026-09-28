@@ -24,9 +24,9 @@
 
 ## 7afilm-tui
 
-- [ ] Stare ostrzeżenia kompilatora: wcięcia w `film/timer.c` (ParseCountdownFields)
+- [x] Stare ostrzeżenia kompilatora: wcięcia w `film/timer.c` (ParseCountdownFields)
       i przycinanie nazwy presetu w `BuildPresetName` (`-Wformat-truncation`)
-- [ ] Migracje bazy przez `db_migrate()` (`PRAGMA user_version`) zamiast
+- [x] Migracje bazy przez `db_migrate()` (`PRAGMA user_version`) zamiast
       sprawdzania kolumn (`db_column_exists("presets", "dev_hh")`)
 
 ## Repozytorium
