@@ -16,7 +16,7 @@
       edycji opisu nowe linie zamieniają się na spacje
 - [ ] Wpisy cykliczne: usunięcie kasuje całą serię; brak pominięcia jednego
       wystąpienia (np. odwołany standup) ani edycji tylko jednego terminu
-- [ ] Wyszukiwanie `/` także w opisach, nie tylko w tytułach i datach
+- [x] Wyszukiwanie `/` także w opisach, nie tylko w tytułach i datach
 - [ ] Cofnięcie odhaczenia: zrobione zadanie od razu znika z dashboardu,
       przywrócić je można tylko w F3 z filtrem „done”
 - [ ] Opcjonalnie: obsługa myszy (klikanie w przyciski i elementy listy)

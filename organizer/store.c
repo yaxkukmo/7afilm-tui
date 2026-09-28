@@ -485,15 +485,17 @@ store_items(sqlite3 *db, Item **out)
     *out = NULL;
     /* bucket: 0 upcoming, 1 recurring, 2 open todo, 3 done todo, 4 past */
     if (sqlite3_prepare_v2(db,
-            "SELECT is_todo, id, title, done, rec, d FROM ("
-            " SELECT 0 AS is_todo, id, title, 0 AS done,"
+            "SELECT is_todo, id, title, description, done, rec, d FROM ("
+            " SELECT 0 AS is_todo, id, title,"
+            "        COALESCE(description, '') AS description, 0 AS done,"
             "        COALESCE(recurrence_type, '') AS rec,"
             "        COALESCE(entry_date, '') AS d,"
             "        CASE WHEN recurrence_type IS NOT NULL THEN 1"
             "             WHEN entry_date >= ?1 THEN 0 ELSE 4 END AS bucket"
             "   FROM calendar_entries"
             " UNION ALL"
-            " SELECT 1, id, title, status = 'done', '', '',"
+            " SELECT 1, id, title, COALESCE(description, ''),"
+            "        status = 'done', '', '',"
             "        CASE WHEN status = 'done' THEN 3 ELSE 2 END"
             "   FROM todos)"
             " ORDER BY bucket,"
@@ -512,11 +514,12 @@ store_items(sqlite3 *db, Item **out)
         memset(it, 0, sizeof(*it));
         it->is_todo    = sqlite3_column_int(s, 0);
         it->id         = sqlite3_column_int64(s, 1);
-        it->title      = dupstr(db_col_str(s, 2));
-        it->done       = sqlite3_column_int(s, 3);
-        it->recurrence = rec_from_name(db_col_str(s, 4));
-        day_parse(db_col_str(s, 5), &it->date);
-        if (!it->title) goto fail;
+        it->title       = dupstr(db_col_str(s, 2));
+        it->description = dupstr(db_col_str(s, 3));
+        it->done        = sqlite3_column_int(s, 4);
+        it->recurrence  = rec_from_name(db_col_str(s, 5));
+        day_parse(db_col_str(s, 6), &it->date);
+        if (!it->title || !it->description) goto fail;
         n++;
     }
     sqlite3_finalize(s);
@@ -533,8 +536,10 @@ void
 store_items_free(Item *items, int n)
 {
     int i;
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
         free(items[i].title);
+        free(items[i].description);
+    }
     free(items);
 }
 

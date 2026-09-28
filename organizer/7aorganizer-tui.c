@@ -24,7 +24,8 @@
  *   a              quick add in one line: "dentysta jutro 15:00" goes to the
  *                  calendar, text without a date or time becomes a todo
  *                  (see quickadd.h)
- *   /              search todos and entries by title or date and jump there
+ *   /              search todos and entries by title, date or description
+ *                  and jump there
  *   [ / ]          scroll a long description in the viewer (Shift+Up/Down too)
  *   F1 / F2 / F3   Dashboard / Calendar (month) / Todo list tabs
  *   Calendar:      a month like cal(1): arrows move the day (up / down a
@@ -144,10 +145,11 @@ static char **g_item_label = NULL;
 
 static int         search_count(void *ctx) { (void)ctx; return g_nitems; }
 static const char *search_label(void *ctx, int i) { (void)ctx; return g_item_label[i]; }
+static const char *search_more(void *ctx, int i)  { (void)ctx; return g_items[i].description; }
 
 static ListPopup g_search = {
     " Search: ", " Enter=go  Esc=cancel  Up/Down=select", NULL,
-    search_count, search_label, NULL,
+    search_count, search_label, search_more, NULL,
     0, "", 0, 0, {0}, 0
 };
 
@@ -643,7 +645,8 @@ free_search_items(void)
 }
 
 /* Labels such as "30.09.2026  Team meeting", "weekly      Standup",
- * "todo        Buy milk" - the search matches the whole label */
+ * "todo        Buy milk" - the search matches the whole label and
+ * the description */
 static void
 start_search(void)
 {

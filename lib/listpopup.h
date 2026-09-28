@@ -4,7 +4,7 @@
 /*
  * listpopup.h - centered popup with a search field over a filtered list.
  * Items come from the app through callbacks; matching is a
- * case-insensitive substring search.
+ * case-insensitive substring search in the row or its `more` text.
  */
 
 #define LP_QUERY_LEN     64
@@ -24,6 +24,8 @@ typedef struct {
     const char  *extra;    /* optional first row (e.g. "new"), or NULL  */
     int        (*count)(void *ctx);
     const char *(*item)(void *ctx, int i);
+    /* Optional text searched besides the row (e.g. a description), or NULL */
+    const char *(*more)(void *ctx, int i);
     void        *ctx;
 
     /* Internal state */

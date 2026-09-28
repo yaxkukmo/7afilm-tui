@@ -69,6 +69,7 @@ typedef struct {
     int   is_todo;
     sqlite3_int64 id;
     char *title;
+    char *description;      /* "" when none */
     int   done;             /* todo */
     int   recurrence;       /* entry: REC_* */
     Day   date;             /* entry, REC_NONE */

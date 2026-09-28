@@ -277,7 +277,8 @@ test_todos(sqlite3 *db)
         e.todo_id = -1;
         e.title = "past";     e.date = day_today() - 3;  store_add_entry(db, &e);
         e.title = "older";    e.date = day_today() - 30; store_add_entry(db, &e);
-        e.title = "later";    e.date = day_today() + 30; store_add_entry(db, &e);
+        e.title = "later";    e.date = day_today() + 30;
+        e.description = "sala 12"; store_add_entry(db, &e); e.description = NULL;
         e.title = "weekly";   e.recurrence = REC_WEEKLY; e.weekday = 2;
         store_add_entry(db, &e);
         n = store_items(db, &items);
@@ -289,6 +290,8 @@ test_todos(sqlite3 *db)
                             "Zadzwonić|past|older|") == 0);
         CHECK(n == 7 && items[3].is_todo && !items[3].done && items[4].done);
         CHECK(!items[1].is_todo && items[1].date == day_today() + 30);
+        CHECK(strcmp(items[1].description, "sala 12") == 0 &&
+              strcmp(items[2].description, "") == 0);
         CHECK(items[2].recurrence == REC_WEEKLY);
         store_items_free(items, n);
         sqlite3_exec(db, "DELETE FROM calendar_entries WHERE todo_id IS NULL;",

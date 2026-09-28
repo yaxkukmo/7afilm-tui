@@ -19,7 +19,8 @@ rebuild_matches(ListPopup *lp)
 
     lp->nmatches = 0;
     for (i = 0; i < n && lp->nmatches < LP_MAX_MATCHES; i++)
-        if (utf8_contains_ci(lp->item(lp->ctx, i), lp->query))
+        if (utf8_contains_ci(lp->item(lp->ctx, i), lp->query) ||
+            (lp->more && utf8_contains_ci(lp->more(lp->ctx, i), lp->query)))
             lp->matches[lp->nmatches++] = i;
 
     total = lp_total(lp);

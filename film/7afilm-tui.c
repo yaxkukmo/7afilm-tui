@@ -114,7 +114,7 @@ static const char *preset_name(void *ctx, int i) { (void)ctx; return g_presets[i
 
 static ListPopup g_search_popup = {
     " Search: ", " Enter=load  Del=delete  Esc=cancel", NULL,
-    preset_count, preset_name, NULL,
+    preset_count, preset_name, NULL, NULL,
     0, "", 0, 0, {0}, 0
 };
 
