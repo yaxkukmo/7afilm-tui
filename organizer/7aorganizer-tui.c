@@ -16,7 +16,8 @@
  *   Tab / S-Tab    next / previous section (Dashboard)
  *   Enter, e       edit the selected entry or todo (see edit.h)
  *   Space          toggle a todo done
- *   s              schedule the selected todo ("jutro 15:00")
+ *   s              schedule the selected todo: a calendar entry form with
+ *                  its title and notes, linked to it
  *   x              delete the selected item (asks y/n)
  *   n              new entry or todo in the form (Type picks which; an
  *                  entry starts on the selected calendar day or today)
@@ -150,12 +151,8 @@ static ListPopup g_search = {
     0, "", 0, 0, {0}, 0
 };
 
-/* Prompt in the bottom bar */
-#define INPUT_NEW      0
-#define INPUT_SCHEDULE 1
+/* Quick add prompt in the bottom box */
 static InputLine     g_input;
-static int           g_input_mode;
-static sqlite3_int64 g_input_todo;   /* INPUT_SCHEDULE */
 
 static void select_new(int is_todo, sqlite3_int64 id, Day date);
 
@@ -466,7 +463,8 @@ ask_delete(void)
     }
 }
 
-static int g_edit_is_new;   /* the open form adds rather than edits */
+static int g_edit_is_new;      /* the open form adds rather than edits */
+static int g_edit_is_schedule; /* the open form schedules a todo */
 
 /* Form for a new item: a todo in the Todo tab or when a todo is
  * selected, otherwise an entry on the selected calendar day / today */
@@ -475,7 +473,8 @@ start_new(void)
 {
     int todo = g_view == VIEW_TODO || (g_view == VIEW_DASHBOARD && selected_todo());
     edit_new(g_db, todo, g_view == VIEW_CALENDAR ? g_cal_day : day_today());
-    g_edit_is_new = 1;
+    g_edit_is_new      = 1;
+    g_edit_is_schedule = 0;
 }
 
 /* One-line quick add.  Calendar tab: entries go on the selected day
@@ -486,7 +485,6 @@ start_quick_add(void)
 {
     static char prompt[40];
 
-    g_input_mode = INPUT_NEW;
     if (g_view == VIEW_CALENDAR) {
         int y, m, d;
         day_to_ymd(g_cal_day, &y, &m, &d);
@@ -499,6 +497,8 @@ start_quick_add(void)
     }
 }
 
+/* Form for a calendar entry made from the selected todo, starting on
+ * the selected calendar day or today */
 static void
 start_schedule(void)
 {
@@ -508,9 +508,13 @@ start_schedule(void)
         snprintf(g_status, sizeof(g_status), "Select a todo to schedule.");
         return;
     }
-    g_input_mode = INPUT_SCHEDULE;
-    g_input_todo = t->id;
-    inputline_open(&g_input, "Schedule on: ", "e.g. jutro 15:00, pt, 30.09");
+    if (edit_schedule_todo(g_db, t->id,
+                           g_view == VIEW_CALENDAR ? g_cal_day : day_today()) != 0) {
+        snprintf(g_status, sizeof(g_status), "Could not load the todo.");
+        return;
+    }
+    g_edit_is_new      = 0;
+    g_edit_is_schedule = 1;
 }
 
 static void
@@ -555,27 +559,6 @@ submit_new(void)
     inputline_close(&g_input);
     load_model();
     select_new(!qa.has_date, id, qa.date);
-}
-
-static void
-submit_schedule(void)
-{
-    Day  date;
-    char time[6], err[100], when[40];
-
-    if (!quickadd_parse_when(g_input.text, day_today(), &date, time, err, sizeof(err))) {
-        snprintf(g_status, sizeof(g_status), "%s", err);
-        return;
-    }
-    if (store_schedule_todo(g_db, g_input_todo, date, time) < 0) {
-        snprintf(g_status, sizeof(g_status), "Schedule failed: %s", sqlite3_errmsg(g_db));
-        return;
-    }
-    fmt_day(date, when, sizeof(when));
-    snprintf(g_status, sizeof(g_status), "Scheduled on %s%s%s",
-             when, time[0] ? " " : "", time);
-    inputline_close(&g_input);
-    load_model();
 }
 
 /* Dashboard: select the first item of the next / previous section that
@@ -637,7 +620,8 @@ start_edit(void)
     const TodoRow    *t = selected_todo();
     int rc = -1;
 
-    g_edit_is_new = 0;
+    g_edit_is_new      = 0;
+    g_edit_is_schedule = 0;
     if (o)      rc = edit_open_entry(g_db, o->entry_id);
     else if (t) rc = edit_open_todo(g_db, t->id);
     else        return;
@@ -1324,6 +1308,14 @@ handle_key(int ch)
             edit_saved_item(&todo, &id, &date);
             select_new(todo, id, date);
             snprintf(g_status, sizeof(g_status), todo ? "Added a todo." : "Added to the calendar.");
+        } else if (g_edit_is_schedule) {
+            int todo;
+            sqlite3_int64 id;
+            Day date;
+            char when[40];
+            edit_saved_item(&todo, &id, &date);
+            fmt_day(date, when, sizeof(when));
+            snprintf(g_status, sizeof(g_status), "Scheduled on %s.", when);
         } else {
             snprintf(g_status, sizeof(g_status), "Saved.");
         }
@@ -1347,8 +1339,7 @@ handle_key(int ch)
         g_status[0] = '\0';
         switch (inputline_key(&g_input, ch)) {
         case IL_SUBMIT:
-            if (g_input_mode == INPUT_NEW) submit_new();
-            else                           submit_schedule();
+            submit_new();
             break;
         case IL_CANCEL:
             g_status[0] = '\0';

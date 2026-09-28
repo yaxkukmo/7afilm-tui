@@ -21,6 +21,9 @@
 /* Empty form for a new item: a todo, or an entry on `date`; a Type
  * field switches between the two */
 int  edit_new(sqlite3 *db, int todo, Day date);
+/* New entry for a todo, on `date`, with its title and notes and linked
+ * to it (todo_id) */
+int  edit_schedule_todo(sqlite3 *db, sqlite3_int64 todo_id, Day date);
 /* After EDIT_SAVED from edit_new(): what was stored; date is the
  * entry's date, or the day passed to edit_new() for other kinds */
 void edit_saved_item(int *is_todo, sqlite3_int64 *id, Day *date);

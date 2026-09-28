@@ -28,6 +28,7 @@ static const char *type_opts[]    = { "calendar entry", "todo", NULL };  /* KIND
 static struct {
     int           open;
     int           is_new;       /* adding: Type can switch the kind */
+    int           scheduling;   /* adding an entry for a todo: no Type */
     int           kind;
     int           action;       /* set by the buttons */
     sqlite3      *db;
@@ -98,6 +99,21 @@ edit_new(sqlite3 *db, int todo, Day date)
     fill_when(date);
     g_edit.open = 1;
     g_focus     = 0;
+    return 0;
+}
+
+int
+edit_schedule_todo(sqlite3 *db, sqlite3_int64 todo_id, Day date)
+{
+    Todo t;
+
+    if (store_get_todo(db, todo_id, &t) != 0) return -1;
+    edit_new(db, 0, date);
+    g_edit.scheduling = 1;
+    g_edit.todo_id    = todo_id;
+    flatten(g_edit.title, sizeof(g_edit.title), t.title);
+    flatten(g_edit.desc, sizeof(g_edit.desc), t.description);
+    store_todo_free(&t);
     return 0;
 }
 
@@ -336,7 +352,8 @@ edit_draw(void)
     if (g_edit.is_new)
         g_edit.kind = g_edit.type;
     /* borders, spacing, buttons and message: 7 rows; plus the fields */
-    h = 7 + (g_edit.kind == KIND_ENTRY ? 5 : 4) + (g_edit.is_new && g_edit.kind == KIND_ENTRY);
+    h = 7 + (g_edit.kind == KIND_ENTRY ? 5 : 4) +
+        (g_edit.is_new && !g_edit.scheduling && g_edit.kind == KIND_ENTRY);
     if (!g_edit.open) return;
     if (w < 40 || rows < h + 2) {
         set_error("Terminal too small for the form");
@@ -356,7 +373,8 @@ edit_draw(void)
     draw_popup_frame(top, left, h, w);
     attron(A_BOLD);
     mvprintw(top, left + 2, " %s ",
-             g_edit.is_new ? (g_edit.kind == KIND_TODO ? "New todo" : "New calendar entry")
+             g_edit.scheduling ? "Schedule todo"
+             : g_edit.is_new ? (g_edit.kind == KIND_TODO ? "New todo" : "New calendar entry")
              : g_edit.kind == KIND_TODO ? "Edit todo"
              : g_edit.repeat == REC_NONE ? "Edit entry"
              : "Edit entry (all repeats)");
@@ -367,7 +385,7 @@ edit_draw(void)
     draw_textfield(r, fc, fw, g_edit.title, sizeof(g_edit.title), FT_TEXT, 0);
     r++;
 
-    if (g_edit.is_new) {
+    if (g_edit.is_new && !g_edit.scheduling) {
         label(r, lc, "Type:");
         draw_dropdown(r, fc, 18, type_opts, &g_edit.type,
                       g_edit.type_buf, sizeof(g_edit.type_buf), NULL);
