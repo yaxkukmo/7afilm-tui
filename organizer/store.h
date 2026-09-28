@@ -64,6 +64,16 @@ typedef struct {
     sqlite3_int64 todo_id;
 } Occurrence;
 
+/* A todo or calendar entry, for searching */
+typedef struct {
+    int   is_todo;
+    sqlite3_int64 id;
+    char *title;
+    int   done;             /* todo */
+    int   recurrence;       /* entry: REC_* */
+    Day   date;             /* entry, REC_NONE */
+} Item;
+
 /* Create or upgrade the schema.  Returns 0, -1 on error (see db_migrate) */
 int  store_init(sqlite3 *db);
 
@@ -95,6 +105,12 @@ void          store_entry_free(Entry *e);
 sqlite3_int64 store_add_entry(sqlite3 *db, const Entry *e);
 int           store_update_entry(sqlite3 *db, const Entry *e);
 int           store_delete_entry(sqlite3 *db, sqlite3_int64 id);
+
+/* Every todo and entry: upcoming one-off entries, recurring entries,
+ * open todos, done todos, then past entries (newest first).
+ * Returns the count or -1. */
+int           store_items(sqlite3 *db, Item **out);
+void          store_items_free(Item *items, int n);
 
 /* All occurrences in [from, to], sorted by date, then all-day entries
  * first, then time, then title.  Returns the count or -1. */

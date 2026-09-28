@@ -20,6 +20,7 @@
  *                  text without a date or time becomes a todo (see quickadd.h)
  *   s              schedule the selected todo ("jutro 15:00") (Todo view)
  *   e              edit the selected entry or todo (see edit.h)
+ *   /              search todos and entries by title or date and jump there
  *   x              delete the selected item (asks y/n)
  *   q / Ctrl+Q     quit
  */
@@ -37,6 +38,7 @@
 #include "db.h"
 #include "edit.h"
 #include "inputline.h"
+#include "listpopup.h"
 #include "quickadd.h"
 #include "store.h"
 #include "tui.h"
@@ -115,6 +117,20 @@ static int           g_confirm_open = 0;
 static char          g_confirm_msg[200];
 static void        (*g_confirm_action)(void);
 static sqlite3_int64 g_pending_id;
+
+/* Search popup over every todo and entry */
+static Item  *g_items      = NULL;
+static int    g_nitems     = 0;
+static char **g_item_label = NULL;
+
+static int         search_count(void *ctx) { (void)ctx; return g_nitems; }
+static const char *search_label(void *ctx, int i) { (void)ctx; return g_item_label[i]; }
+
+static ListPopup g_search = {
+    " Search: ", " Enter=go  Esc=cancel  Up/Down=select", NULL,
+    search_count, search_label, NULL,
+    0, "", 0, 0, {0}, 0
+};
 
 /* Prompt in the bottom bar */
 #define INPUT_NEW      0
@@ -496,6 +512,104 @@ start_edit(void)
     else        return;
     if (rc != 0)
         snprintf(g_status, sizeof(g_status), "Could not load the item.");
+}
+
+static void
+free_search_items(void)
+{
+    int i;
+    for (i = 0; i < g_nitems; i++)
+        free(g_item_label[i]);
+    free(g_item_label);
+    store_items_free(g_items, g_nitems);
+    g_items      = NULL;
+    g_item_label = NULL;
+    g_nitems     = 0;
+}
+
+/* Labels such as "30.09.2026  Team meeting", "weekly      Standup",
+ * "todo        Buy milk" - the search matches the whole label */
+static void
+start_search(void)
+{
+    static const char *const rec_label[] = { "", "daily", "weekly", "monthly", "yearly" };
+    int i, n;
+
+    free_search_items();
+    n = store_items(g_db, &g_items);
+    if (n < 0) {
+        snprintf(g_status, sizeof(g_status), "Database error: %s", sqlite3_errmsg(g_db));
+        return;
+    }
+    g_nitems     = n;
+    g_item_label = calloc((size_t)(n ? n : 1), sizeof(*g_item_label));
+    if (!g_item_label) {
+        free_search_items();
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        const Item *it = &g_items[i];
+        char tag[16];
+        size_t len;
+
+        if (it->is_todo) {
+            snprintf(tag, sizeof(tag), "%s", it->done ? "todo done" : "todo");
+        } else if (it->recurrence != REC_NONE) {
+            snprintf(tag, sizeof(tag), "%s", rec_label[it->recurrence]);
+        } else {
+            int y, m, d;
+            day_to_ymd(it->date, &y, &m, &d);
+            snprintf(tag, sizeof(tag), "%02d.%02d.%04d", d, m, y);
+        }
+        len = strlen(tag) + strlen(it->title) + 16;
+        if ((g_item_label[i] = malloc(len)) == NULL) {
+            free_search_items();
+            return;
+        }
+        snprintf(g_item_label[i], len, "%-10s  %s", tag, it->title);
+    }
+    listpopup_open(&g_search);
+}
+
+/* Show the picked item where it lives */
+static void
+go_to_item(const Item *it)
+{
+    int r, i;
+
+    if (it->is_todo) {
+        if ((it->done && g_todo_filter == TODO_OPEN) ||
+            (!it->done && g_todo_filter == TODO_DONE))
+            g_todo_filter = TODO_ALL;
+        switch_view(VIEW_TODO);
+        for (r = 0; r < g_nrows; r++)
+            if (g_rows[r].kind == ROW_TODO && g_todos[g_rows[r].idx].id == it->id)
+                g_sel[VIEW_TODO] = r;
+        return;
+    }
+
+    if (it->recurrence == REC_NONE) {
+        g_cal_day = it->date;
+    } else {
+        /* the next time it happens, within a year */
+        Occurrence *occ;
+        int n = store_occurrences(g_db, day_today(), day_today() + 366, &occ);
+        g_cal_day = day_today();
+        for (i = 0; i < n; i++)
+            if (occ[i].entry_id == it->id) {
+                g_cal_day = occ[i].date;
+                break;
+            }
+        store_occurrences_free(occ, n);
+    }
+    g_cal_idx = 0;
+    switch_view(VIEW_CALENDAR);
+    {
+        int d = (int)(g_cal_day - week_start(g_cal_day));
+        for (i = 0; i < g_cal_count[d]; i++)
+            if (g_occ[g_cal_first[d] + i].entry_id == it->id)
+                g_cal_idx = i;
+    }
 }
 
 static void
@@ -948,15 +1062,17 @@ draw_all(void)
         attron(COLOR_PAIR(CP_BOX) | A_DIM);
         tui_put_text(rows - 2, 2, cols - 4,
             g_view == VIEW_TODO
-            ? "n new  e edit  s schedule  Space done  f filter  x delete  D C T views  Tab viewer  q quit"
+            ? "n new  e edit  s schedule  Space done  f filter  x delete  / search  D C T views  q quit"
             : g_view == VIEW_CALENDAR
-            ? "arrows day/item  PgUp/PgDn week  Home today  n new  e edit  x delete  D C T views  q quit"
-            : "n new  e edit  x delete  D C T views  Tab viewer  q quit");
+            ? "arrows day/item  PgUp/PgDn week  Home today  n new  e edit  x delete  / search  D C T views"
+            : "n new  e edit  x delete  / search  D C T views  Tab viewer  q quit");
         attroff(COLOR_PAIR(CP_BOX) | A_DIM);
     }
 
     /* Last, so the cursor stays where the form / prompt put it */
-    if (edit_is_open()) {
+    if (g_search.open) {
+        listpopup_draw(&g_search);
+    } else if (edit_is_open()) {
         edit_draw();
     } else if (g_confirm_open) {
         draw_confirm_box(g_confirm_msg);
@@ -983,6 +1099,23 @@ handle_key(int ch)
 {
     int page = getmaxy(stdscr) - 5;
     if (page < 1) page = 1;
+
+    switch (listpopup_key(&g_search, ch)) {
+    case LP_IGNORED:
+        break;
+    case LP_PICKED: {
+        int i = listpopup_selected(&g_search);
+        listpopup_close(&g_search);
+        if (i >= 0) go_to_item(&g_items[i]);
+        free_search_items();
+        return;
+    }
+    case LP_CANCELLED:
+        free_search_items();
+        return;
+    default:
+        return;
+    }
 
     switch (edit_key(ch)) {
     case EDIT_IGNORED:
@@ -1030,6 +1163,9 @@ handle_key(int ch)
         return;
     case 'e':
         start_edit();
+        return;
+    case '/':
+        start_search();
         return;
     case 'q':
     case 'q' & 0x1f:
@@ -1177,6 +1313,7 @@ main(int argc, char **argv)
     store_occurrences_free(g_occ, g_nocc);
     store_todos_free(g_todos, g_ntodos);
     free(g_rows);
+    free_search_items();
     sqlite3_close(g_db);
     return 0;
 }

@@ -268,6 +268,33 @@ test_todos(sqlite3 *db)
     CHECK(n == 1 && rows[0].id == b && rows[0].done);
     store_todos_free(rows, n);
 
+    /* Search list: upcoming, recurring, open todos, done todos, past */
+    {
+        Item *items;
+        Entry e;
+        char order[300] = "";
+        memset(&e, 0, sizeof(e));
+        e.todo_id = -1;
+        e.title = "past";     e.date = day_today() - 3;  store_add_entry(db, &e);
+        e.title = "older";    e.date = day_today() - 30; store_add_entry(db, &e);
+        e.title = "later";    e.date = day_today() + 30; store_add_entry(db, &e);
+        e.title = "weekly";   e.recurrence = REC_WEEKLY; e.weekday = 2;
+        store_add_entry(db, &e);
+        n = store_items(db, &items);
+        for (i = 0; i < n; i++) {
+            strcat(order, items[i].title);
+            strcat(order, "|");
+        }
+        CHECK(strcmp(order, "Napisać raport|later|weekly|Napisać raport|"
+                            "Zadzwonić|past|older|") == 0);
+        CHECK(n == 7 && items[3].is_todo && !items[3].done && items[4].done);
+        CHECK(!items[1].is_todo && items[1].date == day_today() + 30);
+        CHECK(items[2].recurrence == REC_WEEKLY);
+        store_items_free(items, n);
+        sqlite3_exec(db, "DELETE FROM calendar_entries WHERE todo_id IS NULL;",
+                     NULL, NULL, NULL);
+    }
+
     /* Deleting the todo keeps the entry, without the link */
     CHECK(store_delete_todo(db, a) == 0);
     {

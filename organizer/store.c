@@ -471,6 +471,74 @@ store_delete_entry(sqlite3 *db, sqlite3_int64 id)
 }
 
 /* ------------------------------------------------------------------ */
+/* Search list                                                         */
+/* ------------------------------------------------------------------ */
+
+int
+store_items(sqlite3 *db, Item **out)
+{
+    sqlite3_stmt *s;
+    Item *items = NULL;
+    int   n = 0, cap = 0;
+    char  today[11];
+
+    *out = NULL;
+    /* bucket: 0 upcoming, 1 recurring, 2 open todo, 3 done todo, 4 past */
+    if (sqlite3_prepare_v2(db,
+            "SELECT is_todo, id, title, done, rec, d FROM ("
+            " SELECT 0 AS is_todo, id, title, 0 AS done,"
+            "        COALESCE(recurrence_type, '') AS rec,"
+            "        COALESCE(entry_date, '') AS d,"
+            "        CASE WHEN recurrence_type IS NOT NULL THEN 1"
+            "             WHEN entry_date >= ?1 THEN 0 ELSE 4 END AS bucket"
+            "   FROM calendar_entries"
+            " UNION ALL"
+            " SELECT 1, id, title, status = 'done', '', '',"
+            "        CASE WHEN status = 'done' THEN 3 ELSE 2 END"
+            "   FROM todos)"
+            " ORDER BY bucket,"
+            "          CASE WHEN bucket = 0 THEN d END ASC,"
+            "          CASE WHEN bucket = 4 THEN d END DESC,"
+            "          title;",
+            -1, &s, NULL) != SQLITE_OK)
+        return -1;
+    day_format(day_today(), today);
+    sqlite3_bind_text(s, 1, today, -1, SQLITE_TRANSIENT);
+
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        Item *it;
+        if (grow((void **)&items, &cap, n, sizeof(*items)) != 0) goto fail;
+        it = &items[n];
+        memset(it, 0, sizeof(*it));
+        it->is_todo    = sqlite3_column_int(s, 0);
+        it->id         = sqlite3_column_int64(s, 1);
+        it->title      = dupstr(db_col_str(s, 2));
+        it->done       = sqlite3_column_int(s, 3);
+        it->recurrence = rec_from_name(db_col_str(s, 4));
+        day_parse(db_col_str(s, 5), &it->date);
+        if (!it->title) goto fail;
+        n++;
+    }
+    sqlite3_finalize(s);
+    *out = items;
+    return n;
+
+fail:
+    sqlite3_finalize(s);
+    store_items_free(items, n);
+    return -1;
+}
+
+void
+store_items_free(Item *items, int n)
+{
+    int i;
+    for (i = 0; i < n; i++)
+        free(items[i].title);
+    free(items);
+}
+
+/* ------------------------------------------------------------------ */
 /* Occurrences                                                         */
 /* ------------------------------------------------------------------ */
 

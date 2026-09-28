@@ -70,6 +70,7 @@ organizer/edit.o: organizer/edit.c organizer/edit.h organizer/date.h organizer/q
 
 organizer/7aorganizer-tui.o: organizer/7aorganizer-tui.c organizer/date.h organizer/edit.h \
                             organizer/quickadd.h organizer/store.h lib/inputline.h \
+                            lib/listpopup.h \
                             lib/db.h lib/tui.h lib/utf8.h
 	$(CC) $(CFLAGS) -c organizer/7aorganizer-tui.c -o $@
 
