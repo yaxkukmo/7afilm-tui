@@ -143,6 +143,22 @@ utf8_pop(char *buf)
 }
 
 int
+utf8_eq_ci(const char *a, const char *b)
+{
+    unsigned ca, cb;
+    int la, lb;
+
+    for (;;) {
+        la = utf8_decode(a, &ca);
+        lb = utf8_decode(b, &cb);
+        if (la == 0 || lb == 0) return la == lb;
+        if (towlower((wint_t)ca) != towlower((wint_t)cb)) return 0;
+        a += la;
+        b += lb;
+    }
+}
+
+int
 utf8_contains_ci(const char *hay, const char *needle)
 {
     const char *h = hay;

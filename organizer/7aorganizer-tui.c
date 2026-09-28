@@ -15,6 +15,9 @@
  *   Tab            switch focus: list <-> viewer;  Esc back to the list
  *   Space          toggle done (Todo view)
  *   f              Todo filter: open -> done -> all
+ *   n              quick add: "dentysta jutro 15:00" goes to the calendar,
+ *                  text without a date or time becomes a todo (see quickadd.h)
+ *   s              schedule the selected todo ("jutro 15:00") (Todo view)
  *   x              delete the selected item (asks y/n)
  *   q / Ctrl+Q     quit
  */
@@ -30,6 +33,8 @@
 
 #include "date.h"
 #include "db.h"
+#include "inputline.h"
+#include "quickadd.h"
 #include "store.h"
 #include "tui.h"
 #include "utf8.h"
@@ -100,6 +105,13 @@ static int           g_confirm_open = 0;
 static char          g_confirm_msg[200];
 static void        (*g_confirm_action)(void);
 static sqlite3_int64 g_pending_id;
+
+/* Prompt in the bottom bar */
+#define INPUT_NEW      0
+#define INPUT_SCHEDULE 1
+static InputLine     g_input;
+static int           g_input_mode;
+static sqlite3_int64 g_input_todo;   /* INPUT_SCHEDULE */
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -341,6 +353,86 @@ ask_delete(void)
         snprintf(q, sizeof(q), "Delete todo \"%s\"?", title);
         ask(q, do_delete_todo, t->id);
     }
+}
+
+static void
+start_new(void)
+{
+    g_input_mode = INPUT_NEW;
+    inputline_open(&g_input, "New: ",
+                   "e.g. dentysta jutro 15:00   or   pomysł !high");
+}
+
+static void
+start_schedule(void)
+{
+    const TodoRow *t = selected_todo();
+
+    if (!t) {
+        snprintf(g_status, sizeof(g_status), "Select a todo to schedule (Todo view).");
+        return;
+    }
+    g_input_mode = INPUT_SCHEDULE;
+    g_input_todo = t->id;
+    inputline_open(&g_input, "Schedule on: ", "e.g. jutro 15:00, pt, 30.09");
+}
+
+static void
+submit_new(void)
+{
+    QuickAdd qa;
+    char     err[100], when[40];
+
+    if (!quickadd_parse(g_input.text, day_today(), &qa, err, sizeof(err))) {
+        snprintf(g_status, sizeof(g_status), "%s", err);
+        return;                                 /* keep the prompt open */
+    }
+    if (qa.has_date) {
+        Entry e;
+        memset(&e, 0, sizeof(e));
+        e.title      = qa.title;
+        e.recurrence = REC_NONE;
+        e.date       = qa.date;
+        e.todo_id    = -1;
+        memcpy(e.time, qa.time, sizeof(e.time));
+        if (store_add_entry(g_db, &e) < 0) {
+            snprintf(g_status, sizeof(g_status), "Add failed: %s", sqlite3_errmsg(g_db));
+            return;
+        }
+        fmt_day(qa.date, when, sizeof(when));
+        snprintf(g_status, sizeof(g_status), "Added to the calendar: %s%s%s%s",
+                 when, qa.time[0] ? " " : "", qa.time,
+                 qa.priority ? " (priority is for todos only)" : "");
+    } else {
+        if (store_add_todo(g_db, qa.title, NULL, qa.priority ? qa.priority : 2) < 0) {
+            snprintf(g_status, sizeof(g_status), "Add failed: %s", sqlite3_errmsg(g_db));
+            return;
+        }
+        snprintf(g_status, sizeof(g_status), "Added a todo.");
+    }
+    inputline_close(&g_input);
+    load_model();
+}
+
+static void
+submit_schedule(void)
+{
+    Day  date;
+    char time[6], err[100], when[40];
+
+    if (!quickadd_parse_when(g_input.text, day_today(), &date, time, err, sizeof(err))) {
+        snprintf(g_status, sizeof(g_status), "%s", err);
+        return;
+    }
+    if (store_schedule_todo(g_db, g_input_todo, date, time) < 0) {
+        snprintf(g_status, sizeof(g_status), "Schedule failed: %s", sqlite3_errmsg(g_db));
+        return;
+    }
+    fmt_day(date, when, sizeof(when));
+    snprintf(g_status, sizeof(g_status), "Scheduled on %s%s%s",
+             when, time[0] ? " " : "", time);
+    inputline_close(&g_input);
+    load_model();
 }
 
 static void
@@ -683,14 +775,25 @@ draw_all(void)
     } else {
         attron(COLOR_PAIR(CP_BOX) | A_DIM);
         tui_put_text(rows - 2, 2, cols - 4, g_view == VIEW_TODO
-            ? "D dashboard  T todo  Space done  f filter  x delete  Tab viewer  q quit"
-            : "D dashboard  T todo  x delete  Tab viewer  q quit");
+            ? "n new  s schedule  Space done  f filter  x delete  D T views  Tab viewer  q quit"
+            : "n new  x delete  D T views  Tab viewer  q quit");
         attroff(COLOR_PAIR(CP_BOX) | A_DIM);
     }
 
-    if (g_confirm_open)
+    /* Last, so the cursor stays where the prompt put it */
+    if (g_confirm_open) {
         draw_confirm_box(g_confirm_msg);
-    curs_set(0);
+    } else if (g_input.open) {
+        if (g_status[0]) {                      /* e.g. a parse error */
+            attron(COLOR_PAIR(CP_BOX_LINE) | A_BOLD);
+            mvprintw(rows - 3, 2, " %.*s ", (int)utf8_fit(g_status, cols - 6, NULL),
+                     g_status);
+            attroff(COLOR_PAIR(CP_BOX_LINE) | A_BOLD);
+        }
+        inputline_draw(&g_input, rows - 2, 2, cols - 4);
+    } else {
+        curs_set(0);
+    }
     refresh();
 }
 
@@ -715,8 +818,28 @@ handle_key(int ch)
         return;
     }
 
+    if (g_input.open) {
+        g_status[0] = '\0';
+        switch (inputline_key(&g_input, ch)) {
+        case IL_SUBMIT:
+            if (g_input_mode == INPUT_NEW) submit_new();
+            else                           submit_schedule();
+            break;
+        case IL_CANCEL:
+            g_status[0] = '\0';
+            break;
+        }
+        return;
+    }
+
     g_status[0] = '\0';
     switch (ch) {
+    case 'n':
+        start_new();
+        return;
+    case 's':
+        start_schedule();
+        return;
     case 'q':
     case 'q' & 0x1f:
         g_want_quit = 1;

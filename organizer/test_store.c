@@ -3,10 +3,12 @@
  * Run with `make check` (imports organizer/testdata/poc.db).
  */
 
+#include <locale.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "date.h"
+#include "quickadd.h"
 #include "store.h"
 
 static int g_fail = 0;
@@ -276,15 +278,79 @@ test_todos(sqlite3 *db)
     }
 }
 
+
+/* Parse s with today = Monday 2026-09-28; "title|YYYY-MM-DD|HH:MM|prio"
+ * (empty fields when not set), or "ERR:message" */
+static void
+qa(const char *s, const char *want)
+{
+    QuickAdd q;
+    char err[100], got[400], d[11] = "";
+
+    if (!quickadd_parse(s, D("2026-09-28"), &q, err, sizeof(err))) {
+        snprintf(got, sizeof(got), "ERR:%s", err);
+    } else {
+        if (q.has_date) day_format(q.date, d);
+        snprintf(got, sizeof(got), "%s|%s|%s|%d", q.title, d, q.time, q.priority);
+    }
+    if (strcmp(got, want) != 0) {
+        fprintf(stderr, "quickadd \"%s\": got \"%s\", want \"%s\"\n", s, got, want);
+        g_fail++;
+    }
+}
+
+static void
+test_quickadd(int utf8_locale)
+{
+    Day  d;
+    char t[6], err[100];
+
+    qa("dentist tomorrow 3pm",         "dentist|2026-09-29|15:00|0");
+    qa("Dentysta w piątek o 15:00",    "Dentysta|2026-10-02|15:00|0");
+    qa("Kupić mleko !high",            "Kupić mleko|||1");
+    qa("idea !low  z  odstępami",      "idea z odstępami|||3");
+    qa("Spotkanie 30.09 9:30",         "Spotkanie|2026-09-30|09:30|0");
+    qa("urodziny 15.03",               "urodziny|2027-03-15||0");
+    qa("rocznica 28.09.",              "rocznica|2026-09-28||0");
+    qa("przestępny 29.02",             "przestępny|2028-02-29||0");
+    qa("wyjazd 1.10.2027",             "wyjazd|2027-10-01||0");
+    qa("raport +3d",                   "raport|2026-10-01||0");
+    qa("urlop +2w",                    "urlop|2026-10-12||0");
+    qa("call monday",                  "call|2026-10-05||0");   /* next, not today */
+    qa("sprawdzić dziś 12:00am",       "sprawdzić|2026-09-28|00:00|0");
+    qa("lunch 13:15",                  "lunch|2026-09-28|13:15|0");
+    qa("3 jabłka",                     "3 jabłka|||0");
+    qa("wyjście o 18",                 "wyjście o 18|||0");     /* 18 is not a time */
+    qa("x 31.02",                      "ERR:No such date: 31.02");
+    qa("x 2026-02-30",                 "ERR:No such date: 2026-02-30");
+    qa("x 25:00",                      "ERR:No such time: 25:00");
+    qa("x 13pm",                       "ERR:No such time: 13pm");
+    qa("x jutro pojutrze",             "ERR:More than one date: pojutrze");
+    qa("jutro 15:00",                  "ERR:Missing title");
+    if (utf8_locale)
+        qa("Kino w PIĄTEK",            "Kino|2026-10-02||0");
+
+    CHECK(quickadd_parse_when("jutro 15:00", D("2026-09-28"), &d, t, err, sizeof(err)));
+    CHECK(d == D("2026-09-29") && strcmp(t, "15:00") == 0);
+    CHECK(quickadd_parse_when("30.09", D("2026-09-28"), &d, t, err, sizeof(err)));
+    CHECK(d == D("2026-09-30") && t[0] == '\0');
+    CHECK(!quickadd_parse_when("jutro kino", D("2026-09-28"), &d, t, err, sizeof(err)));
+    CHECK(!quickadd_parse_when("", D("2026-09-28"), &d, t, err, sizeof(err)));
+}
+
 int
 main(int argc, char **argv)
 {
     sqlite3 *db;
+    int utf8_locale;
 
     if (argc != 2) {
         fprintf(stderr, "usage: %s poc.db\n", argv[0]);
         return 2;
     }
+    /* Polish case folding in towlower() needs a UTF-8 locale */
+    utf8_locale = setlocale(LC_CTYPE, "C.UTF-8") || setlocale(LC_CTYPE, "C.utf8") ||
+                  setlocale(LC_CTYPE, "en_US.UTF-8");
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 2;
     sqlite3_exec(db, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
 
@@ -293,6 +359,7 @@ main(int argc, char **argv)
     test_import(db, argv[1]);
     test_recurrence(db);
     test_todos(db);
+    test_quickadd(utf8_locale);
 
     sqlite3_close(db);
     if (g_fail) {

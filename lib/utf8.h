@@ -33,7 +33,8 @@ int  utf8_append(char *buf, size_t bufsz, unsigned cp);
 /* Remove the last character; returns 0 when buf was empty */
 int  utf8_pop(char *buf);
 
-/* Case-insensitive substring search */
+/* Case-insensitive substring search / equality */
 int  utf8_contains_ci(const char *hay, const char *needle);
+int  utf8_eq_ci(const char *a, const char *b);
 
 #endif /* UTF8_H */

@@ -13,11 +13,11 @@ LDFLAGS = $(SQLITE_LIBS) $(CURSES_LIBS) -lm
 # Code shared by the 7a TUI apps
 LIB     = lib/lib7a.a
 LIBOBJS = lib/utf8.o lib/tui.o lib/form.o lib/listpopup.o lib/db.o \
-          lib/dynlist.o
+          lib/dynlist.o lib/inputline.o
 
 FILMOBJS = film/timer.o film/7afilm-tui.o
 
-ORGOBJS  = organizer/date.o organizer/store.o
+ORGOBJS  = organizer/date.o organizer/store.o organizer/quickadd.o
 
 all: 7afilm-tui 7aorganizer-tui
 
@@ -50,6 +50,9 @@ lib/db.o: lib/db.c lib/db.h
 lib/dynlist.o: lib/dynlist.c lib/dynlist.h
 	$(CC) $(CFLAGS) -c lib/dynlist.c -o $@
 
+lib/inputline.o: lib/inputline.c lib/inputline.h lib/form.h lib/tui.h lib/utf8.h
+	$(CC) $(CFLAGS) -c lib/inputline.c -o $@
+
 # organizer/
 
 organizer/date.o: organizer/date.c organizer/date.h
@@ -58,11 +61,14 @@ organizer/date.o: organizer/date.c organizer/date.h
 organizer/store.o: organizer/store.c organizer/store.h organizer/date.h lib/db.h
 	$(CC) $(CFLAGS) -c organizer/store.c -o $@
 
+organizer/quickadd.o: organizer/quickadd.c organizer/quickadd.h organizer/date.h lib/utf8.h
+	$(CC) $(CFLAGS) -c organizer/quickadd.c -o $@
+
 organizer/7aorganizer-tui.o: organizer/7aorganizer-tui.c organizer/date.h organizer/store.h \
                             lib/db.h lib/tui.h lib/utf8.h
 	$(CC) $(CFLAGS) -c organizer/7aorganizer-tui.c -o $@
 
-organizer/test_store: organizer/test_store.c $(ORGOBJS) $(LIB)
+organizer/test_store: organizer/test_store.c organizer/quickadd.h $(ORGOBJS) $(LIB)
 	$(CC) $(CFLAGS) -o $@ organizer/test_store.c $(ORGOBJS) $(LIB) $(LDFLAGS)
 
 check: organizer/test_store
