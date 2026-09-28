@@ -48,6 +48,9 @@ static const char *const migrations[] = {
     ");"
     "CREATE INDEX calendar_entries_date ON calendar_entries(entry_date);"
     "CREATE INDEX calendar_entries_todo ON calendar_entries(todo_id);",
+    /* 2: when a todo was marked done, so the dashboard keeps today's */
+    "ALTER TABLE todos ADD COLUMN done_at TEXT;"
+    "UPDATE todos SET done_at = updated_at WHERE status = 'done';",
 };
 
 int
@@ -150,9 +153,10 @@ store_import(sqlite3 *db, const char *path)
     rc = sqlite3_exec(db,
         "BEGIN;"
         "INSERT INTO todos"
-        " (title, description, priority, status, created_at, updated_at)"
+        " (title, description, priority, status, created_at, updated_at, done_at)"
         " SELECT title, description, COALESCE(priority, 2),"
-        "        COALESCE(status, 'open'), created_at, updated_at"
+        "        COALESCE(status, 'open'), created_at, updated_at,"
+        "        CASE WHEN status = 'done' THEN updated_at END"
         " FROM src.todos ORDER BY id;"
         "INSERT INTO calendar_entries"
         " (title, description, entry_date, recurrence_type,"
@@ -203,6 +207,8 @@ store_todos(sqlite3 *db, int filter, TodoRow **out)
             "  FROM todos t"
             " WHERE ?2 = 0 OR (?2 = 1 AND t.status = 'open')"
             "              OR (?2 = 2 AND t.status = 'done')"
+            "              OR (?2 = 3 AND (t.status = 'open'"
+            "                              OR date(t.done_at, 'localtime') = ?1))"
             " ORDER BY t.status = 'done', t.priority, t.id;",
             -1, &s, NULL) != SQLITE_OK)
         return -1;
@@ -296,7 +302,9 @@ store_update_todo(sqlite3 *db, const Todo *t)
     sqlite3_stmt *s;
     if (sqlite3_prepare_v2(db,
             "UPDATE todos SET title = ?1, description = ?2, priority = ?3,"
-            "       status = ?4, updated_at = datetime('now')"
+            "       status = ?4, updated_at = datetime('now'),"
+            "       done_at = CASE WHEN ?4 = 'open' THEN NULL"
+            "                      ELSE COALESCE(done_at, datetime('now')) END"
             " WHERE id = ?5;", -1, &s, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_text(s, 1, t->title, -1, SQLITE_TRANSIENT);
@@ -312,7 +320,8 @@ store_set_todo_done(sqlite3 *db, sqlite3_int64 id, int done)
 {
     sqlite3_stmt *s;
     if (sqlite3_prepare_v2(db,
-            "UPDATE todos SET status = ?1, updated_at = datetime('now')"
+            "UPDATE todos SET status = ?1, updated_at = datetime('now'),"
+            "       done_at = CASE WHEN ?1 = 'done' THEN datetime('now') END"
             " WHERE id = ?2;", -1, &s, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_text(s, 1, done ? "done" : "open", -1, SQLITE_STATIC);

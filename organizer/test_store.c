@@ -97,7 +97,7 @@ test_schema(sqlite3 *db)
 {
     CHECK(store_init(db) == 0);
     CHECK(store_init(db) == 0);                    /* idempotent */
-    CHECK(count_rows(db, "PRAGMA user_version;") == 1);
+    CHECK(count_rows(db, "PRAGMA user_version;") == 2);
 
     /* Both a date and a recurrence, or neither */
     CHECK(sqlite3_exec(db,
@@ -267,6 +267,19 @@ test_todos(sqlite3 *db)
     n = store_todos(db, TODO_DONE, &rows);
     CHECK(n == 1 && rows[0].id == b && rows[0].done);
     store_todos_free(rows, n);
+    /* The dashboard keeps todos done today, after the open ones */
+    n = store_todos(db, TODO_DASHBOARD, &rows);
+    CHECK(n == 2 && rows[0].id == a && rows[1].id == b && rows[1].done);
+    store_todos_free(rows, n);
+    sqlite3_exec(db, "UPDATE todos SET done_at = datetime('now', '-2 days')"
+                     " WHERE status = 'done';", NULL, NULL, NULL);
+    n = store_todos(db, TODO_DASHBOARD, &rows);
+    CHECK(n == 1 && rows[0].id == a);
+    store_todos_free(rows, n);
+    /* Reopening clears done_at */
+    CHECK(store_set_todo_done(db, b, 0) == 0);
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM todos WHERE done_at IS NOT NULL;") == 0);
+    CHECK(store_set_todo_done(db, b, 1) == 0);
 
     /* Search list: upcoming, recurring, open todos, done todos, past */
     {

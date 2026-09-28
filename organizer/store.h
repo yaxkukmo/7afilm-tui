@@ -23,6 +23,7 @@
 #define TODO_ALL    0
 #define TODO_OPEN   1
 #define TODO_DONE   2
+#define TODO_DASHBOARD 3   /* open, and done today */
 
 typedef struct {
     sqlite3_int64 id;

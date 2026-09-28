@@ -8,8 +8,9 @@
  *                                    poc.db-style database (target must be
  *                                    empty)
  *
- * The Dashboard is the main screen: today's entries, open todos, then
- * tomorrow and the rest of the week.  Keys act on the selected item in
+ * The Dashboard is the main screen: today's entries, open todos (and
+ * those done today, so Space can reopen them), then tomorrow and the
+ * rest of the week.  Keys act on the selected item in
  * any view:
  *
  *   Up / Down      move (j / k too);  PgUp / PgDn page;  Home / End
@@ -345,7 +346,7 @@ load_model(void)
             snprintf(g_status, sizeof(g_status), "Database error: %s",
                      sqlite3_errmsg(g_db));
         g_nocc = n < 0 ? 0 : n;
-        n = store_todos(g_db, TODO_OPEN, &g_todos);
+        n = store_todos(g_db, TODO_DASHBOARD, &g_todos);
         if (n < 0)
             snprintf(g_status, sizeof(g_status), "Database error: %s",
                      sqlite3_errmsg(g_db));
@@ -762,7 +763,10 @@ draw_list_row(int y, int x, int w, const Row *row, int selected)
         if (row->group == GROUP_WEEK) {
             snprintf(buf, sizeof(buf), " %s", row->text);
         } else if (row->group == GROUP_TODO) {
-            snprintf(buf, sizeof(buf), " %s  %d open", row->text, g_ntodos);
+            int open = 0, i;
+            for (i = 0; i < g_ntodos; i++)
+                open += !g_todos[i].done;
+            snprintf(buf, sizeof(buf), " %s  %d open", row->text, open);
         } else {
             char d[20];
             fmt_day(g_today + (row->group == GROUP_TOMORROW), d, sizeof(d));
@@ -1143,7 +1147,7 @@ draw_buttons(int row, int col, int cols)
     b[n++] = "a:Quick add";
     if (selected_todo()) {
         b[n++] = "Enter:Edit";
-        b[n++] = "Space:Done";
+        b[n++] = selected_todo()->done ? "Space:Reopen" : "Space:Done";
         b[n++] = "s:Schedule";
         b[n++] = "x:Delete";
     } else if (selected_occ()) {

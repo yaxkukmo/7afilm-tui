@@ -35,7 +35,9 @@ widać tylko listę.  Popupy nie mają cienia.
 ## Zakładki
 
 - **F1 Dashboard** (ekran główny): dziś, otwarte zadania, jutro, reszta
-  tygodnia (dziś + 6 dni); Tab / S-Tab skacze między sekcjami
+  tygodnia (dziś + 6 dni); Tab / S-Tab skacze między sekcjami.  Zadania
+  odhaczone dziś zostają na końcu sekcji TODO z `[x]`, więc Space może je
+  przywrócić; następnego dnia znikają
 - **F2 Calendar**: miesiąc jak w cal(1); strzałki zmieniają dzień (góra/dół
   o tydzień), PgUp/PgDn miesiąc, Home dziś, Tab / j / k wybiera wpis dnia
 - **F3 Todo**: płaska lista zadań, `f` przełącza filtr open → done → all
@@ -46,7 +48,7 @@ widać tylko listę.  Popupy nie mają cienia.
 |------------------|-------------------------------------------------------|
 | `↑↓` `j` `k`     | ruch po liście; PgUp/PgDn, Home/End                   |
 | `Enter`, `e`     | edycja zaznaczonego wpisu lub zadania                 |
-| `Space`          | odhaczenie zadania                                    |
+| `Space`          | odhaczenie zadania albo jego przywrócenie             |
 | `s`              | zaplanowanie zadania: formularz wpisu powiązanego z nim |
 | `x`              | usunięcie (potwierdzenie y/n)                         |
 | `n`              | nowy wpis lub zadanie w formularzu                    |
@@ -93,7 +95,7 @@ Schemat w `organizer/store.c`, wersjonowany przez `db_migrate()`
 układ z poc.db, żeby import szedł bez przeróbek.
 
 - `todos`: title, description, priority 1–3, status open/done,
-  created_at, updated_at
+  created_at, updated_at, done_at (kiedy odhaczone; migracja 2)
 - `calendar_entries`: title, description, albo `entry_date`, albo
   `recurrence_type` (daily / weekly / monthly / yearly) z
   `recurrence_weekday` / `recurrence_day` / `recurrence_month`;

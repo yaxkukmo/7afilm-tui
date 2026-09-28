@@ -17,7 +17,7 @@
 - [ ] Wpisy cykliczne: usunięcie kasuje całą serię; brak pominięcia jednego
       wystąpienia (np. odwołany standup) ani edycji tylko jednego terminu
 - [x] Wyszukiwanie `/` także w opisach, nie tylko w tytułach i datach
-- [ ] Cofnięcie odhaczenia: zrobione zadanie od razu znika z dashboardu,
+- [x] Cofnięcie odhaczenia: zrobione zadanie od razu znika z dashboardu,
       przywrócić je można tylko w F3 z filtrem „done”
 - [ ] Opcjonalnie: obsługa myszy (klikanie w przyciski i elementy listy)
 - [ ] Opcjonalnie: zakładki Help (F11) i Quit (F12) jak w 7afilm
