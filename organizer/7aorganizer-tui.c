@@ -8,20 +8,23 @@
  *                                    poc.db-style database (target must be
  *                                    empty)
  *
- * Keys:
- *   D / C / T      Dashboard / Calendar (week) / Todo view
- *   Up / Down      move in the list (j / k too), or scroll the viewer
- *   Calendar:      Left / Right day (h / l), PgUp / PgDn week, Home today
- *   PgUp / PgDn    page;  Home / End  first / last item
- *   Tab            switch focus: list <-> viewer;  Esc back to the list
- *   Space          toggle done (Todo view)
- *   f              Todo filter: open -> done -> all
+ * The Dashboard is the main screen: today's entries, open todos, then
+ * tomorrow and the rest of the week.  Keys act on the selected item in
+ * any view:
+ *
+ *   Up / Down      move (j / k too);  PgUp / PgDn page;  Home / End
+ *   Tab / S-Tab    next / previous section (Dashboard)
+ *   Enter, e       edit the selected entry or todo (see edit.h)
+ *   Space          toggle a todo done
+ *   s              schedule the selected todo ("jutro 15:00")
+ *   x              delete the selected item (asks y/n)
  *   n              quick add: "dentysta jutro 15:00" goes to the calendar,
  *                  text without a date or time becomes a todo (see quickadd.h)
- *   s              schedule the selected todo ("jutro 15:00") (Todo view)
- *   e              edit the selected entry or todo (see edit.h)
  *   /              search todos and entries by title or date and jump there
- *   x              delete the selected item (asks y/n)
+ *   [ / ]          scroll a long description in the viewer (Shift+Up/Down too)
+ *   D / C / T      Dashboard / Calendar (week) / Todo list
+ *   Calendar:      Left / Right day (h / l), PgUp / PgDn week, Home today
+ *   Todo list:     f cycles the filter open -> done -> all
  *   q / Ctrl+Q     quit
  */
 
@@ -59,6 +62,7 @@
 #define GROUP_TODAY    0
 #define GROUP_TOMORROW 1
 #define GROUP_WEEK     2
+#define GROUP_TODO     3   /* open todos, under today on the dashboard */
 #define WEEK_DAYS      7   /* the dashboard covers today + 6 days */
 
 #define MIN_VIEWER_COLS 70 /* narrower terminals show the list only */
@@ -88,7 +92,6 @@ static const char *const priority_names[4]      = { "", "high", "normal", "low" 
 
 static sqlite3 *g_db;
 static int      g_view          = VIEW_DASHBOARD;
-static int      g_viewer_focus  = 0;
 static int      g_viewer_scroll = 0;
 static int      g_viewer_lines  = 0;   /* lines in the last drawn viewer */
 static int      g_want_quit     = 0;
@@ -138,6 +141,8 @@ static ListPopup g_search = {
 static InputLine     g_input;
 static int           g_input_mode;
 static sqlite3_int64 g_input_todo;   /* INPUT_SCHEDULE */
+
+static void select_new(int is_todo, sqlite3_int64 id, Day date);
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -207,22 +212,30 @@ occ_group(Day d)
 static void
 build_dashboard_rows(void)
 {
-    static const char *const headers[3] = { "TODAY", "TOMORROW", "THIS WEEK" };
-    int g, i, any;
+    static const int order[4] = { GROUP_TODAY, GROUP_TODO, GROUP_TOMORROW, GROUP_WEEK };
+    static const char *const headers[4] = { "TODAY", "TOMORROW", "THIS WEEK", "TODO" };
+    int k, g, i, any;
 
-    for (g = GROUP_TODAY; g <= GROUP_WEEK; g++) {
-        if (g > GROUP_TODAY)
+    for (k = 0; k < 4; k++) {
+        g = order[k];
+        if (k > 0)
             add_row(ROW_EMPTY, 0, g, "");
         add_row(ROW_HEADER, 0, g, headers[g]);
         any = 0;
-        for (i = 0; i < g_nocc; i++) {
-            if (occ_group(g_occ[i].date) == g) {
-                add_row(ROW_OCC, i, g, NULL);
-                any = 1;
+        if (g == GROUP_TODO) {
+            for (i = 0; i < g_ntodos; i++)
+                add_row(ROW_TODO, i, g, NULL);
+            any = g_ntodos > 0;
+        } else {
+            for (i = 0; i < g_nocc; i++) {
+                if (occ_group(g_occ[i].date) == g) {
+                    add_row(ROW_OCC, i, g, NULL);
+                    any = 1;
+                }
             }
         }
         if (!any)
-            add_row(ROW_EMPTY, 0, g, "nothing planned");
+            add_row(ROW_EMPTY, 0, g, g == GROUP_TODO ? "no open todos" : "nothing planned");
     }
 }
 
@@ -304,6 +317,11 @@ load_model(void)
             snprintf(g_status, sizeof(g_status), "Database error: %s",
                      sqlite3_errmsg(g_db));
         g_nocc = n < 0 ? 0 : n;
+        n = store_todos(g_db, TODO_OPEN, &g_todos);
+        if (n < 0)
+            snprintf(g_status, sizeof(g_status), "Database error: %s",
+                     sqlite3_errmsg(g_db));
+        g_ntodos = n < 0 ? 0 : n;
         build_dashboard_rows();
     } else if (g_view == VIEW_CALENDAR) {
         Day week = week_start(g_cal_day);
@@ -369,7 +387,6 @@ static void
 switch_view(int view)
 {
     g_view          = view;
-    g_viewer_focus  = 0;
     g_viewer_scroll = 0;
     load_model();
 }
@@ -434,7 +451,7 @@ start_schedule(void)
     const TodoRow *t = selected_todo();
 
     if (!t) {
-        snprintf(g_status, sizeof(g_status), "Select a todo to schedule (Todo view).");
+        snprintf(g_status, sizeof(g_status), "Select a todo to schedule.");
         return;
     }
     g_input_mode = INPUT_SCHEDULE;
@@ -447,6 +464,7 @@ submit_new(void)
 {
     QuickAdd qa;
     char     err[100], when[40];
+    sqlite3_int64 id;
 
     if (!quickadd_parse(g_input.text, day_today(), &qa, err, sizeof(err))) {
         snprintf(g_status, sizeof(g_status), "%s", err);
@@ -460,7 +478,7 @@ submit_new(void)
         e.date       = qa.date;
         e.todo_id    = -1;
         memcpy(e.time, qa.time, sizeof(e.time));
-        if (store_add_entry(g_db, &e) < 0) {
+        if ((id = store_add_entry(g_db, &e)) < 0) {
             snprintf(g_status, sizeof(g_status), "Add failed: %s", sqlite3_errmsg(g_db));
             return;
         }
@@ -469,7 +487,8 @@ submit_new(void)
                  when, qa.time[0] ? " " : "", qa.time,
                  qa.priority ? " (priority is for todos only)" : "");
     } else {
-        if (store_add_todo(g_db, qa.title, NULL, qa.priority ? qa.priority : 2) < 0) {
+        id = store_add_todo(g_db, qa.title, NULL, qa.priority ? qa.priority : 2);
+        if (id < 0) {
             snprintf(g_status, sizeof(g_status), "Add failed: %s", sqlite3_errmsg(g_db));
             return;
         }
@@ -477,6 +496,7 @@ submit_new(void)
     }
     inputline_close(&g_input);
     load_model();
+    select_new(!qa.has_date, id, qa.date);
 }
 
 static void
@@ -498,6 +518,58 @@ submit_schedule(void)
              when, time[0] ? " " : "", time);
     inputline_close(&g_input);
     load_model();
+}
+
+/* Dashboard: select the first item of the next / previous section that
+ * has one */
+static void
+jump_section(int dir)
+{
+    int h, r;
+
+    if (g_view != VIEW_DASHBOARD || g_sel[g_view] < 0) return;
+    for (h = g_sel[g_view]; h >= 0 && g_rows[h].kind != ROW_HEADER; h--)
+        ;
+    for (;;) {
+        for (h += dir; h >= 0 && h < g_nrows && g_rows[h].kind != ROW_HEADER; h += dir)
+            ;
+        if (h < 0 || h >= g_nrows) return;
+        for (r = h + 1; r < g_nrows && g_rows[r].kind != ROW_HEADER; r++) {
+            if (selectable(r)) {
+                g_sel[g_view]   = r;
+                g_viewer_scroll = 0;
+                return;
+            }
+        }
+    }
+}
+
+/* After adding: select the new item if the current view shows it */
+static void
+select_new(int is_todo, sqlite3_int64 id, Day date)
+{
+    int r, i;
+
+    if (g_view == VIEW_CALENDAR) {
+        int d;
+        if (is_todo) return;
+        g_cal_day = date;
+        load_model();
+        d = (int)(g_cal_day - week_start(g_cal_day));
+        for (i = 0; i < g_cal_count[d]; i++)
+            if (g_occ[g_cal_first[d] + i].entry_id == id)
+                g_cal_idx = i;
+        return;
+    }
+    for (r = 0; r < g_nrows; r++) {
+        if ((is_todo && g_rows[r].kind == ROW_TODO && g_todos[g_rows[r].idx].id == id) ||
+            (!is_todo && g_rows[r].kind == ROW_OCC && g_occ[g_rows[r].idx].entry_id == id &&
+             g_occ[g_rows[r].idx].date == date)) {
+            g_sel[g_view]   = r;
+            g_viewer_scroll = 0;
+            return;
+        }
+    }
 }
 
 static void
@@ -618,7 +690,7 @@ toggle_done(void)
     const TodoRow *t = selected_todo();
 
     if (!t) {
-        snprintf(g_status, sizeof(g_status), "Space marks todos done (Todo view).");
+        snprintf(g_status, sizeof(g_status), "Space marks a todo done; select a todo.");
         return;
     }
     if (store_set_todo_done(g_db, t->id, !t->done) != 0) {
@@ -643,6 +715,8 @@ draw_list_row(int y, int x, int w, const Row *row, int selected)
     case ROW_HEADER:
         if (row->group == GROUP_WEEK) {
             snprintf(buf, sizeof(buf), " %s", row->text);
+        } else if (row->group == GROUP_TODO) {
+            snprintf(buf, sizeof(buf), " %s  %d open", row->text, g_ntodos);
         } else {
             char d[20];
             fmt_day(g_today + (row->group == GROUP_TOMORROW), d, sizeof(d));
@@ -699,7 +773,7 @@ draw_list_row(int y, int x, int w, const Row *row, int selected)
     }
     }
 
-    if (selected) attr = (attr & ~A_DIM) | A_REVERSE | (g_viewer_focus ? 0 : A_BOLD);
+    if (selected) attr = (attr & ~A_DIM) | A_REVERSE | A_BOLD;
     attron(COLOR_PAIR(CP_BOX) | attr);
     tui_put_text(y, x, w, buf);
     attroff(COLOR_PAIR(CP_BOX) | attr);
@@ -789,7 +863,7 @@ draw_calendar(int top, int x, int w, int h)
             const Occurrence *o = &g_occ[first + skip + i];
             int is_sel = sel && skip + i == g_cal_idx;
             snprintf(buf, sizeof(buf), "%s%s%s", o->time, o->time[0] ? " " : "", o->title);
-            attr = is_sel ? A_REVERSE | (g_viewer_focus ? 0 : A_BOLD) : 0;
+            attr = is_sel ? A_REVERSE | A_BOLD : 0;
             attron(COLOR_PAIR(CP_BOX) | attr);
             tui_put_text(top + 2 + i, cx, cw, buf);
             attroff(COLOR_PAIR(CP_BOX) | attr);
@@ -980,11 +1054,28 @@ draw_viewer(int top, int x, int w, int h)
 /* ------------------------------------------------------------------ */
 
 static void
-draw_title(int col, const char *title, int focused)
+draw_title(int col, const char *title)
 {
-    attron(COLOR_PAIR(CP_BOX_LINE) | A_BOLD | (focused ? A_REVERSE : 0));
+    attron(COLOR_PAIR(CP_BOX_LINE) | A_BOLD);
     mvprintw(0, col, " %s ", title);
-    attroff(COLOR_PAIR(CP_BOX_LINE) | A_BOLD | A_REVERSE);
+    attroff(COLOR_PAIR(CP_BOX_LINE) | A_BOLD);
+}
+
+/* Key help for what is selected */
+static const char *
+help_text(void)
+{
+    if (selected_todo())
+        return "Enter edit  Space done  s schedule  x delete  n new  / search"
+               "  Tab section  D C T views  q quit";
+    if (selected_occ())
+        return g_view == VIEW_CALENDAR
+            ? "Enter edit  x delete  arrows day/item  PgUp/PgDn week  Home today"
+              "  n new  / search  D C T views  q quit"
+            : "Enter edit  x delete  n new  / search  Tab section  D C T views  q quit";
+    return g_view == VIEW_CALENDAR
+        ? "arrows day/item  PgUp/PgDn week  Home today  n new  / search  D C T views  q quit"
+        : "n new  / search  D C T views  q quit";
 }
 
 static void
@@ -1043,13 +1134,13 @@ draw_all(void)
     } else {
         snprintf(title, sizeof(title), "%s", view_names[g_view]);
     }
-    draw_title(2, title, !g_viewer_focus);
+    draw_title(2, title);
     if (g_view == VIEW_CALENDAR)
         draw_calendar(1, 1, right - 1, body_h);
     else
         draw_list(1, 1, right - 1, body_h);
     if (split) {
-        draw_title(split + 2, "Viewer", g_viewer_focus);
+        draw_title(split + 2, "Viewer");
         draw_viewer(1, split + 2, cols - split - 4, body_h);
     }
 
@@ -1060,12 +1151,7 @@ draw_all(void)
         attroff(COLOR_PAIR(CP_BOX) | A_BOLD);
     } else {
         attron(COLOR_PAIR(CP_BOX) | A_DIM);
-        tui_put_text(rows - 2, 2, cols - 4,
-            g_view == VIEW_TODO
-            ? "n new  e edit  s schedule  Space done  f filter  x delete  / search  D C T views  q quit"
-            : g_view == VIEW_CALENDAR
-            ? "arrows day/item  PgUp/PgDn week  Home today  n new  e edit  x delete  / search  D C T views"
-            : "n new  e edit  x delete  / search  D C T views  Tab viewer  q quit");
+        tui_put_text(rows - 2, 2, cols - 4, help_text());
         attroff(COLOR_PAIR(CP_BOX) | A_DIM);
     }
 
@@ -1180,12 +1266,23 @@ handle_key(int ch)
     case 'C': case 'c':
         switch_view(VIEW_CALENDAR);
         return;
+    case '\n': case '\r': case KEY_ENTER:
+        start_edit();
+        return;
     case '\t':
-        if (viewer_split()) g_viewer_focus = !g_viewer_focus;
+        jump_section(+1);
         return;
-    case 27: /* ESC */
-        g_viewer_focus = 0;
+    case KEY_BTAB:
+        jump_section(-1);
         return;
+    case '[': case KEY_SR:
+    case ']': case KEY_SF: {
+        int max = g_viewer_lines - (getmaxy(stdscr) - 4);
+        g_viewer_scroll += (ch == '[' || ch == KEY_SR) ? -3 : 3;
+        if (g_viewer_scroll > max) g_viewer_scroll = max;
+        if (g_viewer_scroll < 0)   g_viewer_scroll = 0;
+        return;
+    }
     case 'x':
         ask_delete();
         return;
@@ -1197,20 +1294,6 @@ handle_key(int ch)
             g_todo_filter = (g_todo_filter + 1) % 3; /* open -> done -> all */
             load_model();
         }
-        return;
-    }
-
-    if (g_viewer_focus) {
-        int max = g_viewer_lines - (getmaxy(stdscr) - 4);
-        if (max < 0) max = 0;
-        if (ch == KEY_UP || ch == 'k')   g_viewer_scroll--;
-        if (ch == KEY_DOWN || ch == 'j') g_viewer_scroll++;
-        if (ch == KEY_PPAGE)             g_viewer_scroll -= page;
-        if (ch == KEY_NPAGE)             g_viewer_scroll += page;
-        if (ch == KEY_HOME)              g_viewer_scroll = 0;
-        if (ch == KEY_END)               g_viewer_scroll = max;
-        if (g_viewer_scroll > max) g_viewer_scroll = max;
-        if (g_viewer_scroll < 0)   g_viewer_scroll = 0;
         return;
     }
 
