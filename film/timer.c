@@ -86,9 +86,12 @@ ParseCountdownFields(CountdownTimer *t)
     long hh = strtol(t->hh_buf, NULL, 10);
     long mm = strtol(t->mm_buf, NULL, 10);
     long ss = strtol(t->ss_buf, NULL, 10);
-    if (hh < 0) hh = 0; if (hh > 999) hh = 999;
-    if (mm < 0) mm = 0; if (mm > 59)  mm = 59;
-    if (ss < 0) ss = 0; if (ss > 59)  ss = 59;
+    if (hh < 0) hh = 0;
+    if (hh > 999) hh = 999;
+    if (mm < 0) mm = 0;
+    if (mm > 59) mm = 59;
+    if (ss < 0) ss = 0;
+    if (ss > 59) ss = 59;
     t->remaining = (int)(hh * 3600 + mm * 60 + ss);
 }
 

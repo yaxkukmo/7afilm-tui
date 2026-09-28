@@ -716,12 +716,27 @@ BuildPresetName(char *out, size_t outsz,
                 const char *film, const char *iso_nom, const char *iso_used,
                 const char *developer, const char *dilution)
 {
+    char full[256];
+    size_t len;
+
+    if (outsz == 0)
+        return;
     if (!iso_nom  || !iso_nom[0])  iso_nom  = "?";
     if (!iso_used || !iso_used[0]) iso_used = iso_nom;
     if (strcmp(iso_nom, iso_used) == 0)
-        snprintf(out, outsz, "%s %s %s %s", film, iso_nom, developer, dilution);
+        snprintf(full, sizeof(full), "%s %s %s %s", film, iso_nom, developer, dilution);
     else
-        snprintf(out, outsz, "%s [%s @ %s] %s %s", film, iso_nom, iso_used, developer, dilution);
+        snprintf(full, sizeof(full), "%s [%s @ %s] %s %s", film, iso_nom, iso_used, developer, dilution);
+
+    /* Too long names are cut, but never inside a UTF-8 character */
+    len = strlen(full);
+    if (len >= outsz) {
+        len = outsz - 1;
+        while (len > 0 && ((unsigned char)full[len] & 0xC0) == 0x80)
+            len--;
+    }
+    memcpy(out, full, len);
+    out[len] = '\0';
 }
 
 static void
